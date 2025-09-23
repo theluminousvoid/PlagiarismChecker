@@ -11,7 +11,7 @@ import json
 import streamlit as st
 import sys, os
 
-# если хочешь убирать этот hack — установи пакет как модуль или запускай из корня проекта
+# можно установить пакет как модуль или запускать из корня проекта
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.domain import Document, User, Submission, Rule
