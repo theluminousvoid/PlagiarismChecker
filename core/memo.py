@@ -94,14 +94,6 @@ def check_submission_cached(
     }
 
 
-def clear_cache():
-    """Очистить кэш"""
-    _compare_texts_cached.cache_clear()
-    _cache_stats["hits"] = 0
-    _cache_stats["misses"] = 0
-    _cache_stats["size"] = 0
-
-
 def get_cache_stats() -> Dict:
     """Получить статистику кэша"""
     cache_info = _compare_texts_cached.cache_info()
