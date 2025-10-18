@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PlagiarismChecker</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    <link rel="stylesheet" href="../static/css/style.css">
+</head>
+<body>
+
+    <!-- LOGIN PAGE -->
+    <div class="login-page" id="loginPage">
+        <div class="login-card">
+            <div class="logo">🔍</div>
+            <h1 class="login-title">PlagiarismChecker</h1>
+            <p class="login-subtitle">Система проверки на плагиат</p>
+
+            <!-- LOGIN FORM -->
+            <div id="loginForm">
+                <input type="text" class="input" id="loginUsername" placeholder="Логин">
+                <input type="password" class="input" id="loginPassword" placeholder="Пароль">
+                
+                <button class="btn" onclick="login()">
+                    <span class="material-icons">login</span>
+                    Войти
+                </button>
+                
+                <p style="text-align: center; margin-top: 16px; color: var(--text-secondary);">
+                    Нет аккаунта? 
+                    <a href="#" onclick="showRegisterForm(); return false;" style="color: var(--primary); font-weight: 600;">
+                        Зарегистрироваться
+                    </a>
+                </p>
+            </div>
+
+            <!-- REGISTER FORM -->
+            <div id="registerForm" style="display: none;">
+                <input type="text" class="input" id="regUsername" placeholder="Логин (мин. 3 символа)">
+                <input type="password" class="input" id="regPassword" placeholder="Пароль (мин. 6 символов)">
+                <input type="text" class="input" id="regFullName" placeholder="ФИО">
+                
+                <button class="btn" onclick="register()">
+                    <span class="material-icons">person_add</span>
+                    Зарегистрироваться
+                </button>
+                
+                <p style="text-align: center; margin-top: 16px; color: var(--text-secondary);">
+                    Уже есть аккаунт? 
+                    <a href="#" onclick="showLoginForm(); return false;" style="color: var(--primary); font-weight: 600;">
+                        Войти
+                    </a>
+                </p>
+            </div>
+
+            <div class="info-box">
+                <p><strong>ℹ️ Тестовые аккаунты:</strong></p>
+                <p>👤 Пользователь: user / user123</p>
+                <p>👑 Админ: admin / admin123</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- MAIN APP -->
+    <div class="main-page" id="mainPage">
+        <!-- NAVBAR -->
+        <nav class="navbar">
+            <div class="nav-brand">
+                <span class="material-icons">search</span>
+                <span>PlagiarismChecker</span>
+            </div>
+            <div class="nav-user">
+                <div class="user-chip">
+                    <span class="material-icons">account_circle</span>
+                    <span id="userName"></span>
+                    <span class="badge" id="userRole"></span>
+                </div>
+                <button class="btn btn-danger btn-sm" onclick="logout()">
+                    <span class="material-icons">logout</span>
+                </button>
+            </div>
+        </nav>
+
+        <div class="content">
+            <div class="layout">
+                <!-- SIDEBAR -->
+                <aside class="sidebar" id="sidebarMenu">
+                    <!-- Меню будет генерироваться JS в зависимости от роли -->
+                </aside>
+
+                <!-- MAIN CONTENT -->
+                <main>
+                    <!-- DASHBOARD -->
+                    <section id="dashboard" class="section active">
+                        <div class="page-header">
+                            <h1>Панель управления</h1>
+                            <p>Обзор системы</p>
+                        </div>
+                        <div class="metrics-grid" id="metricsGrid"></div>
+                        <div class="card">
+                            <h3 class="card-title">
+                                <span class="material-icons">trending_up</span>
+                                Статистика
+                            </h3>
+                            <div id="dashboardStats"></div>
+                        </div>
+                    </section>
+
+                    <!-- UPLOAD (USER) -->
+                    <section id="upload" class="section">
+                        <div class="page-header">
+                            <h1>Загрузить документ</h1>
+                            <p>Добавьте свой текст в систему</p>
+                        </div>
+                        
+                        <div class="card">
+                            <label class="input-label">Название документа:</label>
+                            <input type="text" class="input" id="docTitle" placeholder="Например: Курсовая работа">
+                            
+                            <label class="input-label">Текст документа:</label>
+                            <textarea class="textarea" id="docText" placeholder="Вставьте текст (минимум 50 символов)..."></textarea>
+                            
+                            <button class="btn" onclick="uploadDocument()">
+                                <span class="material-icons">upload</span>
+                                Загрузить
+                            </button>
+                            <div id="uploadResult"></div>
+                        </div>
+                    </section>
+
+                    <!-- MY DOCUMENTS (USER) -->
+                    <section id="my-docs" class="section">
+                        <div class="page-header">
+                            <h1>Мои документы</h1>
+                            <p>Все загруженные вами тексты</p>
+                        </div>
+                        <div class="card" id="myDocsContent"></div>
+                    </section>
+
+                    <!-- CHECK (ADMIN) -->
+                    <section id="check" class="section">
+                        <div class="page-header">
+                            <h1>Проверка на плагиат</h1>
+                            <p>Выберите документ для проверки</p>
+                        </div>
+                        <div class="card" id="checkContent"></div>
+                    </section>
+
+                    <!-- ALL DOCUMENTS (ADMIN) -->
+                    <section id="database" class="section">
+                        <div class="page-header">
+                            <h1>База документов</h1>
+                            <p>Все тексты в системе</p>
+                        </div>
+                        
+                        <div class="card">
+                            <div class="search-bar">
+                                <span class="material-icons">search</span>
+                                <input type="text" id="searchQuery" placeholder="Поиск..." onkeyup="searchDocuments()">
+                            </div>
+                            
+                            <div class="filters">
+                                <input type="text" class="input" id="filterAuthor" placeholder="Автор">
+                                <input type="number" class="input" id="filterMinLength" placeholder="Мин. длина">
+                                <button class="btn btn-sm" onclick="applyFilters()">
+                                    <span class="material-icons">filter_list</span>
+                                    Применить
+                                </button>
+                                <button class="btn btn-sm btn-secondary" onclick="clearFilters()">
+                                    Сбросить
+                                </button>
+                            </div>
+                            
+                            <div id="documentsTable"></div>
+                        </div>
+                    </section>
+
+                    <!-- HISTORY (ADMIN) -->
+                    <section id="history" class="section">
+                        <div class="page-header">
+                            <h1>История проверок</h1>
+                            <p>Все выполненные проверки</p>
+                        </div>
+                        <div class="card" id="historyContent"></div>
+                    </section>
+
+                    <!-- ANALYTICS (ADMIN) -->
+                    <section id="analytics" class="section">
+                        <div class="page-header">
+                            <h1>Расширенная аналитика</h1>
+                            <p>Рекурсивный анализ и поиск цепочек плагиата (Лаба №2)</p>
+                        </div>
+                        
+                        <div class="card">
+                            <h3 class="card-title">
+                                <span class="material-icons">account_tree</span>
+                                Рекурсивный анализ
+                            </h3>
+                            <p style="color: var(--text-secondary); margin-bottom: 20px;">
+                                Использует рекурсивные функции для глубокого анализа всех документов
+                                и построения дерева связей между похожими текстами.
+                            </p>
+                            
+                            <button class="btn" onclick="runRecursiveAnalysis()">
+                                <span class="material-icons">analytics</span>
+                                Запустить рекурсивный анализ
+                            </button>
+                            
+                            <div id="recursiveResult"></div>
+                        </div>
+                    </section>
+                </main>
+            </div>
+        </div>
+    </div>
+
+    <script src="../static/js/app.js"></script>
+</body>
+</html>
