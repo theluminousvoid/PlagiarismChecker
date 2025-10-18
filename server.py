@@ -15,11 +15,10 @@ from functools import wraps
 # Импорты из наших модулей
 from core.domain import Document, Submission
 from core.transforms import normalize, tokenize, ngrams, jaccard
-from core.closures import by_author, by_title, by_min_length, compose_filters
+from core.closures import by_author, by_title, by_min_length, compose_filters, by_date_range, create_similarity_threshold
 from core.memo import check_submission_cached, get_cache_stats
 from core.ftypes import validate_submission
-from core.recursion import compare_submissions_recursive, tree_walk_documents
-
+from core.recursion import compare_submissions_recursive, tree_walk_documents, count_documents_by_author_recursive
 app = Flask(__name__, static_folder='static', template_folder='templates')
 app.secret_key = secrets.token_hex(32)
 
@@ -265,7 +264,7 @@ def upload_document():
     if not title or not text:
         return jsonify({'error': 'Заполните название и текст'}), 400
     
-    # Валидация через Either (Лаба №4)
+    # Валидация через Either
     validation = validate_submission(text, min_length=50)
     if validation.is_left():
         return jsonify({'error': validation.get_left()}), 400
@@ -294,7 +293,7 @@ def upload_document():
 @app.route('/api/documents', methods=['GET'])
 @login_required
 def get_documents():
-    """Получить документы"""
+    """Получить документы с фильтрами"""
     conn = get_db()
     c = conn.cursor()
     
@@ -309,10 +308,6 @@ def get_documents():
             ORDER BY d.created_at DESC
         ''', (session['user_id'],))
     else:
-        # Применяем фильтры (Лаба №2: замыкания)
-        author = request.args.get('author', '')
-        min_length = request.args.get('min_length', 0, type=int)
-        
         query = '''
             SELECT d.id, d.title, d.text, d.created_at, u.full_name as author, u.username
             FROM documents d
@@ -324,42 +319,63 @@ def get_documents():
     docs = c.fetchall()
     conn.close()
     
+    # Преобразуем в объекты Document для фильтрации
+    documents = tuple(
+        Document(
+            id=str(doc['id']),
+            title=doc['title'],
+            text=doc['text'],
+            author=doc['author'],
+            ts=doc['created_at']
+        )
+        for doc in docs
+    )
+    
+    # Применяем фильтры
+    if session.get('role') == 'admin':
+        filters = []
+        
+        # Фильтр по автору
+        author = request.args.get('author', '')
+        if author:
+            filters.append(by_author(author))
+        
+        # Фильтр по минимальной длине
+        min_length = request.args.get('min_length', 0, type=int)
+        if min_length > 0:
+            filters.append(by_min_length(min_length))
+        
+        # НОВОЕ: Фильтр по диапазону дат
+        date_from = request.args.get('date_from', '')
+        date_to = request.args.get('date_to', '')
+        if date_from and date_to:
+            filters.append(by_date_range(date_from, date_to))
+        
+        # Композиция фильтров
+        if filters:
+            combined = compose_filters(*filters)
+            documents = tuple(filter(combined, documents))
+    
+    # Форматируем ответ
     result = []
-    for doc in docs:
+    for doc in documents:
         result.append({
-            'id': doc['id'],
-            'title': doc['title'],
-            'text': doc['text'][:200] + '...' if len(doc['text']) > 200 else doc['text'],
-            'text_full': doc['text'],
-            'author': doc['author'],
-            'created_at': doc['created_at']
+            'id': doc.id,
+            'title': doc.title,
+            'text': doc.text[:200] + '...' if len(doc.text) > 200 else doc.text,
+            'text_full': doc.text,
+            'author': doc.author,
+            'created_at': doc.ts
         })
     
-    # Применяем фильтры если админ (Лаба №2)
-    if session.get('role') == 'admin':
-        author = request.args.get('author', '')
-        min_length = request.args.get('min_length', 0, type=int)
-        
-        if author or min_length > 0:
-            filters = []
-            if author:
-                filters.append(lambda d: author.lower() in d['author'].lower())
-            if min_length > 0:
-                filters.append(lambda d: len(d['text_full']) >= min_length)
-            
-            # Композиция фильтров (Лаба №2)
-            if filters:
-                combined = lambda d: all(f(d) for f in filters)
-                result = list(filter(combined, result))
-    
     return jsonify(result)
-
 @app.route('/api/check/<int:doc_id>', methods=['POST'])
 @admin_required
 def check_document(doc_id):
-    """Проверить документ на плагиат (только админы)"""
+    """Проверить документ на плагиат с настраиваемым порогом"""
     data = request.json
     n = data.get('n', 3)
+    threshold = data.get('threshold', 0.0)  # НОВОЕ: порог схожести
     
     conn = get_db()
     c = conn.cursor()
@@ -372,8 +388,13 @@ def check_document(doc_id):
         conn.close()
         return jsonify({'error': 'Документ не найден'}), 404
     
-    # Получаем все остальные документы для сравнения
-    c.execute('SELECT * FROM documents WHERE id != ?', (doc_id,))
+    # Получаем все остальные документы для сравнения С АВТОРАМИ через JOIN
+    c.execute('''
+        SELECT d.*, u.full_name as author_name
+        FROM documents d
+        JOIN users u ON d.user_id = u.id
+        WHERE d.id != ?
+    ''', (doc_id,))
     other_docs = c.fetchall()
     
     if not other_docs:
@@ -384,21 +405,13 @@ def check_document(doc_id):
             'message': 'Нет документов для сравнения'
         })
     
-    # Преобразуем в объекты Document
-    check_doc = Document(
-        id=str(doc['id']),
-        title=doc['title'],
-        text=doc['text'],
-        author='',
-        ts=doc['created_at']
-    )
-    
+    # Преобразуем в объекты Document С АВТОРАМИ
     compare_docs = tuple(
         Document(
             id=str(d['id']),
             title=d['title'],
             text=d['text'],
-            author='',
+            author=d['author_name'],  # ← ИСПРАВЛЕНО: теперь берём автора из JOIN
             ts=d['created_at']
         )
         for d in other_docs
@@ -412,8 +425,17 @@ def check_document(doc_id):
         ts=doc['created_at']
     )
     
-    # Проверяем с мемоизацией (Лаба №3)
+    # Проверяем с мемоизацией
     result = check_submission_cached(submission, compare_docs, n)
+    
+    # НОВОЕ: Фильтруем результаты по порогу
+    if threshold > 0:
+        threshold_filter = create_similarity_threshold(threshold)
+        result['matches'] = [
+            match for match in result['matches']
+            if threshold_filter(match['similarity'])
+        ]
+        result['filtered_by_threshold'] = threshold
     
     # Сохраняем результат проверки
     matched_doc_id = int(result['matches'][0]['doc_id']) if result['matches'] else None
@@ -462,6 +484,62 @@ def get_stats():
         'cache_stats': get_cache_stats()
     })
 
+@app.route('/api/stats/authors', methods=['GET'])
+@admin_required
+def get_author_stats():
+    """
+    Статистика по авторам с использованием рекурсии
+    Использует count_documents_by_author_recursive()
+    """
+    conn = get_db()
+    c = conn.cursor()
+    
+    # Получаем всех пользователей
+    c.execute('SELECT id, full_name, username FROM users WHERE role = "user"')
+    users = c.fetchall()
+    
+    # Получаем все документы
+    c.execute('''
+        SELECT d.*, u.full_name as author_name
+        FROM documents d
+        JOIN users u ON d.user_id = u.id
+    ''')
+    docs_data = c.fetchall()
+    conn.close()
+    
+    # Преобразуем в объекты Document
+    documents = tuple(
+        Document(
+            id=str(d['id']),
+            title=d['title'],
+            text=d['text'],
+            author=d['author_name'],
+            ts=d['created_at']
+        )
+        for d in docs_data
+    )
+    
+    # Считаем документы для каждого автора РЕКУРСИВНО
+    author_stats = []
+    for user in users:
+        count = count_documents_by_author_recursive(documents, user['full_name'])
+        author_stats.append({
+            'author': user['full_name'],
+            'username': user['username'],
+            'document_count': count
+        })
+    
+    # Сортируем по количеству документов
+    author_stats.sort(key=lambda x: x['document_count'], reverse=True)
+    
+    return jsonify({
+        'authors': author_stats,
+        'total_authors': len(author_stats),
+        'method': 'recursive_count'
+    })
+ 
+
+
 @app.route('/api/checks/history', methods=['GET'])
 @admin_required
 def get_checks_history():
@@ -504,7 +582,7 @@ def get_checks_history():
 @app.route('/api/analytics/recursive', methods=['GET'])
 @admin_required
 def analytics_recursive():
-    """Рекурсивный анализ (Лаба №2)"""
+    """Рекурсивный анализ"""
     try:
         conn = get_db()
         c = conn.cursor()
@@ -623,7 +701,7 @@ def check_my_document(doc_id):
         ts=doc['created_at']
     )
     
-    # Проверяем с мемоизацией (Лаба №3)
+    # Проверяем с мемоизацией
     result = check_submission_cached(submission, compare_docs, n)
     
     return jsonify(result)
