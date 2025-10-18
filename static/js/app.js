@@ -229,7 +229,7 @@ async function renderDashboard() {
         
         document.getElementById('dashboardStats').innerHTML = `
             <div class="info-box">
-                <h4>💾 Кэш (мемоизация - Лаба №3):</h4>
+                <h4>💾 Кэш (мемоизация):</h4>
                 <p>Размер: ${stats.cache_stats.size} записей</p>
                 <p>Попаданий: ${stats.cache_stats.hits}</p>
                 <p>Промахов: ${stats.cache_stats.misses}</p>
@@ -477,7 +477,7 @@ async function checkMyDoc(docId, title) {
     }
 }
 
-// ===== CHECK (ADMIN) =====
+// ===== CHECK PAGE (ADMIN) =====
 async function renderCheckPage() {
     try {
         const response = await fetch(`${API_URL}/documents`, { credentials: 'include' });
@@ -485,14 +485,16 @@ async function renderCheckPage() {
         
         if (allDocuments.length === 0) {
             document.getElementById('checkContent').innerHTML = `
-                <p style="text-align: center; color: var(--text-muted);">Нет документов для проверки</p>
+                <div class="card">
+                    <p style="text-align: center; color: var(--text-secondary);">Нет документов для проверки</p>
+                </div>
             `;
             return;
         }
         
         const html = allDocuments.map(doc => `
-            <div class="doc-item">
-                <div style="display: flex; justify-content: space-between; align-items: start;">
+            <div class="card" style="margin-top: 16px;">
+                <div style="display: flex; gap: 20px; align-items: start;">
                     <div style="flex: 1;">
                         <div class="doc-title">${doc.title}</div>
                         <div class="doc-meta">
@@ -502,18 +504,115 @@ async function renderCheckPage() {
                         </div>
                         <div class="doc-text">${doc.text}</div>
                     </div>
-                    <button class="btn btn-sm" onclick="checkDocument(${doc.id})">
+                    <button class="btn btn-sm" onclick="checkDocument(${doc.id})" style="flex-shrink: 0;">
                         <span class="material-icons">search</span>
                         Проверить
                     </button>
                 </div>
-                <div id="result-${doc.id}"></div>
+                <div id="result-${doc.id}" style="margin-top: 16px;"></div>
             </div>
         `).join('');
         
         document.getElementById('checkContent').innerHTML = html;
+        
     } catch (error) {
         console.error('Ошибка:', error);
+    }
+}
+async function checkDocument(docId) {
+    const n = parseInt(document.getElementById('checkN').value) || 3;
+    const threshold = parseFloat(document.getElementById('checkThreshold').value) || 0;
+    const resultDiv = document.getElementById(`result-${docId}`);
+    
+    const btn = event.target.closest('button');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="material-icons rotating">sync</span> Проверка...';
+    
+    try {
+        const response = await fetch(`${API_URL}/check/${docId}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ n, threshold })
+        });
+        
+        const data = await response.json();
+        
+        if (!response.ok) {
+            throw new Error(data.error);
+        }
+        
+        const percentage = Math.round(data.score * 100);
+        const statusClass = percentage < 30 ? 'status-success' : 
+                           percentage < 70 ? 'status-warning' : 'status-error';
+        const statusText = percentage < 30 ? 'Оригинальный' : 
+                          percentage < 70 ? 'Подозрительный' : 'Плагиат!';
+        
+        let html = `
+            <div class="result-card">
+                <div class="similarity-circle">${percentage}%</div>
+                <h3 style="text-align: center; margin-bottom: 8px;">Результат проверки</h3>
+                <div class="status-badge ${statusClass}" style="display: flex; justify-content: center; margin: 0 auto; width: fit-content;">
+                    ${statusText}
+                </div>
+            </div>
+            
+            ${data.filtered_by_threshold ? `
+                <div class="info-box">
+                    <p><strong>🎯 Применен порог:</strong> показаны только результаты ≥ ${Math.round(data.filtered_by_threshold * 100)}%</p>
+                    <p><strong>🔧 Техника:</strong> Лаба №2 (замыкание create_similarity_threshold)</p>
+                </div>
+            ` : ''}
+            
+            <div class="info-box">
+                <h4>📊 Статистика</h4>
+                <p>• Токенов: ${data.stats.tokens}</p>
+                <p>• N-грамм: ${data.stats.ngrams}</p>
+                <p>• Проверено документов: ${data.stats.documents_checked}</p>
+                <p>• Кэш используется: ${data.stats.cache_used ? '✅ Да' : '❌ Нет'}</p>
+            </div>
+        `;
+        
+        if (data.matches && data.matches.length > 0) {
+            html += '<div class="info-box"><h4>Похожие документы</h4>';
+            data.matches.forEach((match, i) => {
+                const matchPercent = Math.round(match.similarity * 100);
+                const matchStatus = matchPercent < 30 ? 'status-success' : 
+                                   matchPercent < 70 ? 'status-warning' : 'status-error';
+                html += `
+                    <div class="doc-item" style="margin-top: 12px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div style="flex: 1;">
+                                <div class="doc-title">${i+1}. ${match.doc_title}</div>
+                                <div class="doc-meta">
+                                    ${match.doc_author ? `👤 ${match.doc_author}` : '👤 Автор не указан'}
+                                </div>
+                            </div>
+                            <span class="status-badge ${matchStatus}">${matchPercent}%</span>
+                        </div>
+                    </div>
+                `;
+            });
+            html += '</div>';
+        } else if (data.filtered_by_threshold) {
+            html += `
+                <div class="info-box">
+                    <p>⚠️ Нет документов, соответствующих порогу схожести</p>
+                </div>
+            `;
+        }
+        
+        resultDiv.innerHTML = html;
+        
+    } catch (error) {
+        resultDiv.innerHTML = `
+            <div class="info-box" style="border-left: 4px solid var(--error);">
+                <p style="color: var(--error);"><strong>❌ Ошибка проверки:</strong> ${error.message}</p>
+            </div>
+        `;
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<span class="material-icons">search</span> Проверить';
     }
 }
 
@@ -725,7 +824,7 @@ async function runRecursiveAnalysis() {
         resultDiv.innerHTML = `
             <div style="margin-top: 24px;">
                 <div class="info-box" style="background: rgba(139, 92, 246, 0.1); border-color: var(--primary);">
-                    <h4>🔍 Рекурсивный анализ завершён (Лаба №2)</h4>
+                    <h4>🔍 Рекурсивный анализ завершён</h4>
                     <p style="margin-top: 12px;">Использованы две рекурсивные функции:</p>
                     <p>• <strong>compare_submissions_recursive()</strong> - рекурсивное сравнение документов</p>
                     <p>• <strong>tree_walk_documents()</strong> - рекурсивное построение дерева связей</p>
@@ -740,7 +839,7 @@ async function runRecursiveAnalysis() {
                         <div class="stat-value">${Math.round(avgSimilarity * 100)}%</div>
                         <div class="stat-label">Средняя схожесть</div>
                     </div>
-                    <div class="stat-item" style="background: #FFEBEE;">
+                    <div class="stat-item" style="background: #ffc7d0ff;">
                         <div class="stat-value" style="color: var(--error);">${highSimilarities}</div>
                         <div class="stat-label">Высокая схожесть (>70%)</div>
                     </div>
@@ -805,5 +904,184 @@ async function runRecursiveAnalysis() {
     } finally {
         btn.disabled = false;
         btn.innerHTML = '<span class="material-icons">analytics</span> Запустить рекурсивный анализ';
+    }
+}
+
+
+// Статистика по авторам
+async function showAuthorStats() {
+    const resultDiv = document.getElementById('authorStatsResult');
+    const btn = event.target;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="material-icons rotating">sync</span> Загрузка...';
+    
+    try {
+        const response = await fetch(`${API_URL}/stats/authors`, {
+            credentials: 'include'
+        });
+        const data = await response.json();
+        
+        if (!response.ok) {
+            throw new Error(data.error);
+        }
+        
+        let html = `
+            <div style="margin-top: 24px;">
+                <div class="info-box" style="margin-bottom: 16px;">
+                    <p><strong>🔧 Метод:</strong> ${data.method}</p>
+                    <p style="margin-top: 8px;"><strong>👥 Всего авторов:</strong> ${data.total_authors}</p>
+                </div>
+        `;
+        
+        data.authors.forEach((author, index) => {
+            const barWidth = (author.document_count / Math.max(...data.authors.map(a => a.document_count))) * 100;
+            html += `
+                <div class="doc-item" style="margin-bottom: 12px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <div class="doc-title">${index + 1}. ${author.author}</div>
+                        <span class="badge" style="background: var(--primary); color: white;">
+                            ${author.document_count} документов
+                        </span>
+                    </div>
+                    <div class="doc-meta" style="margin-bottom: 12px;">
+                        👤 @${author.username}
+                    </div>
+                    <div style="background: var(--background); height: 8px; border-radius: 4px; overflow: hidden;">
+                        <div style="background: var(--primary); height: 100%; width: ${barWidth}%; transition: width 0.3s;"></div>
+                    </div>
+                </div>
+            `;
+        });
+        
+        html += '</div>';
+        resultDiv.innerHTML = html;
+        
+    } catch (error) {
+        resultDiv.innerHTML = `
+            <div class="info-box" style="margin-top: 20px; background: rgba(239, 68, 68, 0.1); border-color: var(--error);">
+                <p style="color: var(--error); font-weight: 600; margin: 0;">❌ Ошибка загрузки статистики</p>
+                <p style="color: var(--error); margin: 8px 0 0 0;">${error.message}</p>
+            </div>
+        `;
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<span class="material-icons">bar_chart</span> Показать статистику';
+    }
+}
+
+// Обновляем applyFilters для работы с датами
+async function applyFilters() {
+    const author = document.getElementById('filterAuthor').value.trim();
+    const minLength = document.getElementById('filterMinLength').value;
+    const dateFrom = document.getElementById('filterDateFrom').value;
+    const dateTo = document.getElementById('filterDateTo').value;
+    
+    let url = `${API_URL}/documents?`;
+    
+    if (author) url += `author=${encodeURIComponent(author)}&`;
+    if (minLength) url += `min_length=${minLength}&`;
+    if (dateFrom) url += `date_from=${dateFrom}&`;
+    if (dateTo) url += `date_to=${dateTo}&`;
+    
+    try {
+        const response = await fetch(url, { credentials: 'include' });
+        const docs = await response.json();
+        displayDocuments(docs);
+    } catch (error) {
+        console.error('Ошибка:', error);
+    }
+}
+
+async function checkDocument(docId) {
+    const n = parseInt(document.getElementById('checkN').value) || 3;
+    const threshold = parseFloat(document.getElementById('checkThreshold').value) || 0;
+    const resultDiv = document.getElementById(`result-${docId}`);
+    
+    const btn = event.target.closest('button');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="material-icons rotating">sync</span> Проверка...';
+    
+    try {
+        const response = await fetch(`${API_URL}/check/${docId}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ n, threshold })
+        });
+        
+        const data = await response.json();
+        
+        if (!response.ok) {
+            throw new Error(data.error);
+        }
+        
+        const percentage = Math.round(data.score * 100);
+        const statusClass = percentage < 30 ? 'status-success' : 
+                           percentage < 70 ? 'status-warning' : 'status-error';
+        const statusText = percentage < 30 ? 'Оригинальный' : 
+                          percentage < 70 ? 'Подозрительный' : 'Плагиат!';
+        
+        let html = `
+            <div class="result-card">
+                <div class="similarity-circle">${percentage}%</div>
+                <h3 style="text-align: center; margin-bottom: 8px;">Результат проверки</h3>
+                <div class="status-badge ${statusClass}" style="display: flex; justify-content: center; margin: 0 auto; width: fit-content;">
+                    ${statusText}
+                </div>
+            </div>
+            
+            ${data.filtered_by_threshold ? `
+                <div class="info-box">
+                    <p><strong>🎯 Применен порог:</strong> показаны только результаты ≥ ${Math.round(data.filtered_by_threshold * 100)}%</p>
+                </div>
+            ` : ''}
+            
+            <div class="info-box">
+                <h4>📊 Статистика</h4>
+                <p>• Токенов: ${data.stats.tokens}</p>
+                <p>• N-грамм: ${data.stats.ngrams}</p>
+                <p>• Проверено документов: ${data.stats.documents_checked}</p>
+                <p>• Кэш используется: ${data.stats.cache_used ? '✅ Да' : '❌ Нет'}</p>
+            </div>
+        `;
+        
+        if (data.matches && data.matches.length > 0) {
+            html += '<div class="info-box"><h4>Похожие документы</h4>';
+            data.matches.forEach((match, i) => {
+                const matchPercent = Math.round(match.similarity * 100);
+                const matchStatus = matchPercent < 30 ? 'status-success' : 
+                                   matchPercent < 70 ? 'status-warning' : 'status-error';
+                html += `
+                    <div class="doc-item" style="margin-top: 12px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <div class="doc-title">${i+1}. ${match.doc_title}</div>
+                                <div class="doc-meta">👤 ${match.doc_author}</div>
+                            </div>
+                            <span class="status-badge ${matchStatus}">${matchPercent}%</span>
+                        </div>
+                    </div>
+                `;
+            });
+            html += '</div>';
+        } else if (data.filtered_by_threshold) {
+            html += `
+                <div class="info-box">
+                    <p>⚠️ Нет документов, соответствующих порогу схожести</p>
+                </div>
+            `;
+        }
+        
+        resultDiv.innerHTML = html;
+        
+    } catch (error) {
+        resultDiv.innerHTML = `
+            <div class="info-box" style="border-left: 4px solid var(--error);">
+                <p style="color: var(--error);"><strong>❌ Ошибка проверки:</strong> ${error.message}</p>
+            </div>
+        `;
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<span class="material-icons">search</span> Проверить';
     }
 }
