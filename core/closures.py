@@ -1,6 +1,5 @@
 """
 Замыкания и фильтры для работы с документами
-Лаба №2: Лямбда и замыкания + рекурсия
 """
 
 from typing import Callable
@@ -25,20 +24,6 @@ def by_author(author: str) -> Callable[[Document], bool]:
         return author.lower() in doc.author.lower()
     return filter_func
 
-
-def by_title(keyword: str) -> Callable[[Document], bool]:
-    """
-    Замыкание для фильтрации документов по названию.
-    
-    Args:
-        keyword: Ключевое слово в названии
-        
-    Returns:
-        Функция-фильтр
-    """
-    def filter_func(doc: Document) -> bool:
-        return keyword.lower() in doc.title.lower()
-    return filter_func
 
 
 def by_min_length(min_len: int) -> Callable[[Document], bool]:
