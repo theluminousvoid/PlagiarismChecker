@@ -3,7 +3,7 @@
 PlagiarismChecker API с базой данных и авторизацией
 """
 
-from flask import Flask, jsonify, request, send_from_directory, session
+from flask import Flask, jsonify,  request, send_from_directory, session
 from flask_cors import CORS
 import sqlite3
 import hashlib
@@ -15,7 +15,7 @@ from functools import wraps
 # Импорты из наших модулей
 from core.domain import Document, Submission
 from core.transforms import normalize, tokenize, ngrams, jaccard
-from core.closures import by_author, by_title, by_min_length, compose_filters, by_date_range, create_similarity_threshold
+from core.closures import by_author, by_title,  by_min_length, compose_filters, by_date_range, create_similarity_threshold
 from core.memo import check_submission_cached, get_cache_stats
 from core.ftypes import validate_submission
 from core.recursion import compare_submissions_recursive, tree_walk_documents, count_documents_by_author_recursive
@@ -339,6 +339,10 @@ def get_documents():
         author = request.args.get('author', '')
         if author:
             filters.append(by_author(author))
+            
+        title_keyword = request.args.get('title', '')
+        if title_keyword:
+            filters.append(by_title(title_keyword))
         
         # Фильтр по минимальной длине
         min_length = request.args.get('min_length', 0, type=int)
@@ -587,12 +591,25 @@ def analytics_recursive():
         conn = get_db()
         c = conn.cursor()
         
-        c.execute('SELECT * FROM documents')
+        c.execute('SELECT * FROM documents ORDER BY id')
         docs_data = c.fetchall()
         conn.close()
         
+        print(f"\n{'='*60}")
+        print(f"📊 НАЧАЛО РЕКУРСИВНОГО АНАЛИЗА")
+        print(f"📄 Всего документов в базе: {len(docs_data)}")
+        print(f"{'='*60}\n")
+        
         if len(docs_data) < 2:
             return jsonify({'error': 'Нужно минимум 2 документа'}), 400
+        
+        # Создаем словарь для быстрого поиска названий
+        doc_titles = {}
+        for d in docs_data:
+            doc_titles[str(d['id'])] = d['title']
+            print(f"  ID {d['id']:3d}: {d['title']:40s} ({len(d['text'])} символов)")
+        
+        print(f"\n{'='*60}\n")
         
         # Преобразуем в объекты
         documents = []
@@ -620,20 +637,67 @@ def analytics_recursive():
         submissions = tuple(submissions)
         
         # Рекурсивное сравнение
+        print("🔄 Запуск compare_submissions_recursive...")
         similarities = compare_submissions_recursive(submissions, documents, n=3)
+        print(f"✅ Схожести рассчитаны: {similarities}\n")
         
-        # Рекурсивный обход дерева
-        doc_tree = tree_walk_documents(documents, max_depth=10)
+        # Рекурсивный обход дерева - пробуем разные стартовые точки
+        print("🌳 Поиск самого длинного дерева документов...\n")
+        
+        best_tree = tuple()
+        best_start_idx = 0
+        
+        # Пробуем начать с КАЖДОГО документа
+        for idx in range(len(documents)):
+            # Временно отключаем отладочный вывод для других стартов
+            import sys
+            import io
+            old_stdout = sys.stdout
+            sys.stdout = io.StringIO()
+            
+            tree = tree_walk_documents(documents, root=idx, max_depth=15)
+            
+            # Возвращаем вывод
+            sys.stdout = old_stdout
+            
+            title_short = documents[idx].title[:35] + '...' if len(documents[idx].title) > 35 else documents[idx].title
+            print(f"  📍 Старт с индекса {idx:2d} (ID={documents[idx].id:3s}, '{title_short:38s}'): длина = {len(tree)}")
+            
+            if len(tree) > len(best_tree):
+                best_tree = tree
+                best_start_idx = idx
+                print(f"     ✨ Новый лучший результат!")
+        
+        doc_tree = best_tree
+        
+        print(f"\n{'='*60}")
+        print(f"🏆 ВЫБРАНО САМОЕ ДЛИННОЕ ДЕРЕВО")
+        print(f"   Старт: индекс {best_start_idx} (ID={documents[best_start_idx].id}, '{documents[best_start_idx].title}')")
+        print(f"   Длина цепочки: {len(doc_tree)}")
+        print(f"{'='*60}")
+        
+        # Показываем детали лучшего дерева
+        print(f"\n🌳 Дерево связей:")
+        for i, doc_id in enumerate(doc_tree):
+            arrow = " → " if i < len(doc_tree) - 1 else ""
+            print(f"   {doc_id}: {doc_titles.get(doc_id, 'Unknown')}{arrow}")
+        print()
+        
+        # Добавляем названия документов
+        tree_with_titles = [
+            {'id': doc_id, 'title': doc_titles.get(doc_id, 'Unknown')}
+            for doc_id in doc_tree
+        ]
         
         return jsonify({
             'similarities': list(similarities),
             'document_tree': list(doc_tree),
+            'tree_with_titles': tree_with_titles,
             'message': 'Анализ завершён'
         })
         
     except Exception as e:
-        # Логируем ошибку
-        print(f"ОШИБКА: {str(e)}")
+        print(f"\n❌ ОШИБКА: {str(e)}")
         import traceback
         traceback.print_exc()
         
@@ -641,6 +705,7 @@ def analytics_recursive():
             'error': f'Ошибка: {str(e)}'
         }), 500
 
+        
 @app.route('/api/check-my-document/<int:doc_id>', methods=['POST'])
 @login_required
 def check_my_document(doc_id):

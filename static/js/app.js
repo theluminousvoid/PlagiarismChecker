@@ -704,9 +704,24 @@ async function applyFilters() {
 }
 
 function clearFilters() {
-    document.getElementById('filterAuthor').value = '';
-    document.getElementById('filterMinLength').value = '';
-    document.getElementById('searchQuery').value = '';
+    // Очищаем все поля фильтров
+    const filterAuthor = document.getElementById('filterAuthor');
+    const filterTitle = document.getElementById('filterTitle');
+    const filterMinLength = document.getElementById('filterMinLength');
+    const filterDateFrom = document.getElementById('filterDateFrom');
+    const filterDateTo = document.getElementById('filterDateTo');
+    
+    if (filterAuthor) filterAuthor.value = '';
+    if (filterTitle) filterTitle.value = '';
+    if (filterMinLength) filterMinLength.value = '';
+    if (filterDateFrom) filterDateFrom.value = '';
+    if (filterDateTo) filterDateTo.value = '';
+    
+    // Очищаем поле поиска, если оно есть
+    const searchQuery = document.getElementById('searchQuery');
+    if (searchQuery) searchQuery.value = '';
+    
+    // Перезагружаем список документов
     renderAllDocuments();
 }
 
@@ -786,10 +801,8 @@ async function renderHistory() {
         console.error('Ошибка:', error);
     }
 }
-
 // ===== RECURSIVE ANALYSIS (ADMIN) =====
 function renderAnalyticsPage() {
-    // Страница уже есть в HTML, просто показываем её
     document.getElementById('recursiveResult').innerHTML = '';
 }
 
@@ -823,74 +836,380 @@ async function runRecursiveAnalysis() {
         
         resultDiv.innerHTML = `
             <div style="margin-top: 24px;">
-                <div class="info-box" style="background: rgba(139, 92, 246, 0.1); border-color: var(--primary);">
-                    <h4>🔍 Рекурсивный анализ завершён</h4>
-                    <p style="margin-top: 12px;">Использованы две рекурсивные функции:</p>
-                    <p>• <strong>compare_submissions_recursive()</strong> - рекурсивное сравнение документов</p>
-                    <p>• <strong>tree_walk_documents()</strong> - рекурсивное построение дерева связей</p>
-                </div>
                 
-                <div class="stats-grid" style="margin-top: 20px;">
-                    <div class="stat-item">
-                        <div class="stat-value">${data.similarities.length}</div>
-                        <div class="stat-label">Проанализировано</div>
+                <!-- КРАТКАЯ СВОДКА -->
+                <div class="card" style="background: linear-gradient(135deg, var(--primary), var(--secondary)); color: white; margin-bottom: 20px;">
+                    <h3 style="margin: 0 0 16px 0; display: flex; align-items: center; gap: 8px;">
+                        <span class="material-icons">analytics</span>
+                        Результаты рекурсивного анализа
+                    </h3>
+                    
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px;">
+                        <div>
+                            <div style="font-size: 32px; font-weight: 800; margin-bottom: 4px;">
+                                ${data.similarities.length}
+                            </div>
+                            <div style="font-size: 13px; opacity: 0.9;">
+                                Документов проанализировано
+                            </div>
+                        </div>
+                        <div>
+                            <div style="font-size: 32px; font-weight: 800; margin-bottom: 4px;">
+                                ${data.document_tree.length}
+                            </div>
+                            <div style="font-size: 13px; opacity: 0.9;">
+                                Документов в цепочке
+                            </div>
+                        </div>
+                        <div>
+                            <div style="font-size: 32px; font-weight: 800; margin-bottom: 4px;">
+                                ${Math.round(Math.max(...data.similarities) * 100)}%
+                            </div>
+                            <div style="font-size: 13px; opacity: 0.9;">
+                                Максимальная схожесть
+                            </div>
+                        </div>
+                        <div>
+                            <div style="font-size: 32px; font-weight: 800; margin-bottom: 4px;">
+                                ${highSimilarities}
+                            </div>
+                            <div style="font-size: 13px; opacity: 0.9;">
+                                Возможных плагиатов
+                            </div>
+                        </div>
                     </div>
-                    <div class="stat-item">
-                        <div class="stat-value">${Math.round(avgSimilarity * 100)}%</div>
-                        <div class="stat-label">Средняя схожесть</div>
-                    </div>
-                    <div class="stat-item" style="background: #ffc7d0ff;">
-                        <div class="stat-value" style="color: var(--error);">${highSimilarities}</div>
-                        <div class="stat-label">Высокая схожесть (>70%)</div>
-                    </div>
-                    <div class="stat-item" style="background: #FFF3E0;">
-                        <div class="stat-value" style="color: var(--warning);">${mediumSimilarities}</div>
-                        <div class="stat-label">Средняя (30-70%)</div>
-                    </div>
-                    <div class="stat-item" style="background: #E8F5E9;">
-                        <div class="stat-value" style="color: var(--success);">${lowSimilarities}</div>
-                        <div class="stat-label">Низкая (<30%)</div>
+                    
+                    <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid rgba(255,255,255,0.2); font-size: 13px; opacity: 0.9;">
+                        <p style="margin: 0;">💡 Использованы рекурсивные функции: <strong>compare_submissions_recursive()</strong> и <strong>tree_walk_documents()</strong></p>
                     </div>
                 </div>
-                
-                <div class="card" style="margin-top: 20px; background: var(--surface-light);">
+
+                <!-- ДЕРЕВО СВЯЗЕЙ -->
+                <div class="card" style="background: var(--surface-light); margin-bottom: 20px;">
                     <h4 style="margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
                         <span class="material-icons">account_tree</span>
-                        Дерево связей документов (рекурсивный обход)
+                        Дерево связей документов
                     </h4>
-                    <p style="color: var(--text-secondary); margin-bottom: 12px;">
-                        Документы связаны по схожести содержания (порог 30%)
+                    <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 16px;">
+                        Самая длинная цепочка связанных документов (${data.document_tree.length} документов)
                     </p>
-                    <div style="background: var(--bg); padding: 16px; border-radius: 8px; font-family: monospace; overflow-x: auto;">
-                        ${data.document_tree.map((id, idx) => {
-                            const arrow = idx < data.document_tree.length - 1 ? ' → ' : '';
-                            return `<span style="color: var(--primary);">${id}</span>${arrow}`;
-                        }).join('')}
-                    </div>
-                    <p style="margin-top: 12px; font-size: 13px; color: var(--text-muted);">
-                        Найдено ${data.document_tree.length} связанных документов в цепочке
-                    </p>
-                </div>
-                
-                <div class="info-box" style="margin-top: 20px;">
-                    <h4>📊 Детальная статистика схожести:</h4>
-                    ${data.similarities.slice(0, 10).map((sim, idx) => {
-                        const percentage = Math.round(sim * 100);
-                        const statusClass = percentage < 30 ? 'status-success' : 
-                                           percentage < 70 ? 'status-warning' : 'status-error';
-                        return `
-                            <div style="display: flex; justify-content: space-between; align-items: center; margin: 8px 0;">
-                                <span>Документ ${idx + 1}</span>
-                                <div class="progress-bar" style="width: 200px; margin: 0 12px;">
-                                    <div class="progress-fill" style="width: ${percentage}%"></div>
+                    
+                    ${data.document_tree.length <= 8 ? `
+                        <!-- Полное отображение для коротких цепочек -->
+                        <div style="background: var(--background); padding: 20px; border-radius: 12px;">
+                            ${data.tree_with_titles.map((item, idx) => {
+                                const arrow = idx < data.tree_with_titles.length - 1 
+                                    ? `<div style="text-align: center; margin: 8px 0;">
+                                         <span class="material-icons" style="color: var(--primary); font-size: 28px;">arrow_downward</span>
+                                       </div>` 
+                                    : '';
+                                return `
+                                    <div>
+                                        <div style="
+                                            background: linear-gradient(135deg, var(--primary), var(--secondary));
+                                            color: white;
+                                            padding: 14px 18px;
+                                            border-radius: 10px;
+                                            font-weight: 600;
+                                            box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
+                                        ">
+                                            <div style="font-size: 11px; opacity: 0.8; margin-bottom: 4px;">
+                                                Шаг ${idx + 1} • ID: ${item.id}
+                                            </div>
+                                            <div style="font-size: 14px;">
+                                                ${item.title}
+                                            </div>
+                                        </div>
+                                        ${arrow}
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    ` : `
+                        <!-- Компактное отображение для длинных цепочек -->
+                        <div style="
+                            background: var(--background); 
+                            padding: 16px; 
+                            border-radius: 10px;
+                            font-family: monospace;
+                            font-size: 13px;
+                            line-height: 1.8;
+                            overflow-x: auto;
+                        ">
+                            ${data.tree_with_titles.map((item, idx) => {
+                                const arrow = idx < data.tree_with_titles.length - 1 ? ' → ' : '';
+                                return `<span style="
+                                    background: linear-gradient(135deg, var(--primary), var(--secondary));
+                                    color: white;
+                                    padding: 4px 10px;
+                                    border-radius: 6px;
+                                    white-space: nowrap;
+                                ">${item.id}: ${item.title.substring(0, 20)}${item.title.length > 20 ? '...' : ''}</span>${arrow}`;
+                            }).join('')}
+                        </div>
+                        
+                        <!-- Кнопка для показа деталей -->
+                        <button 
+                            class="btn btn-secondary" 
+                            style="margin-top: 12px; width: 100%;"
+                            onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none'; this.innerHTML = this.innerHTML.includes('Показать') ? '<span class=\\"material-icons\\">expand_less</span> Скрыть детали' : '<span class=\\"material-icons\\">expand_more</span> Показать детали'">
+                            <span class="material-icons">expand_more</span>
+                            Показать детали
+                        </button>
+                        <div style="display: none; margin-top: 16px;">
+                            ${data.tree_with_titles.map((item, idx) => `
+                                <div style="
+                                    padding: 12px;
+                                    margin: 8px 0;
+                                    background: var(--surface);
+                                    border-radius: 8px;
+                                    border-left: 3px solid var(--primary);
+                                ">
+                                    <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 4px;">
+                                        Шаг ${idx + 1} / ${data.tree_with_titles.length}
+                                    </div>
+                                    <div style="font-weight: 600;">
+                                        ID ${item.id}: ${item.title}
+                                    </div>
                                 </div>
-                                <span class="status-badge ${statusClass}" style="padding: 4px 12px; font-size: 12px;">
-                                    ${percentage}%
-                                </span>
+                            `).join('')}
+                        </div>
+                    `}
+                </div>
+
+                <!-- ТОП-10 ДОКУМЕНТОВ -->
+                <div class="card" style="background: var(--surface-light); margin-bottom: 20px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                        <h4 style="margin: 0; display: flex; align-items: center; gap: 8px;">
+                            <span class="material-icons">emoji_events</span>
+                            Топ-10 документов по схожести
+                        </h4>
+                        <button 
+                            class="btn btn-sm btn-secondary"
+                            onclick="
+                                const content = this.parentElement.nextElementSibling;
+                                const isHidden = content.style.display === 'none';
+                                content.style.display = isHidden ? 'block' : 'none';
+                                this.innerHTML = isHidden 
+                                    ? '<span class=\\'material-icons\\'>expand_less</span> Свернуть'
+                                    : '<span class=\\'material-icons\\'>expand_more</span> Развернуть';
+                            ">
+                            <span class="material-icons">expand_more</span>
+                            Развернуть
+                        </button>
+                    </div>
+                    
+                    <div style="display: none;">
+                        <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 16px;">
+                            Документы с наибольшей схожестью с другими текстами
+                        </p>
+                        
+                        ${(() => {
+                            // Создаем массив документов с их названиями
+                            const docs = data.all_documents 
+                                ? data.similarities.map((sim, idx) => ({
+                                    id: data.all_documents[idx]?.id || (idx + 1),
+                                    title: data.all_documents[idx]?.title || `Документ ${idx + 1}`,
+                                    similarity: sim
+                                  }))
+                                : data.similarities.map((sim, idx) => ({
+                                    id: idx + 1,
+                                    title: `Документ ${idx + 1}`,
+                                    similarity: sim
+                                  }));
+                            
+                            // Сортируем по убыванию схожести
+                            docs.sort((a, b) => b.similarity - a.similarity);
+                            
+                            // Берем топ-10
+                            return docs.slice(0, 10).map((doc, rank) => {
+                                const percentage = Math.round(doc.similarity * 100);
+                                
+                                let barColor, statusText, statusIcon;
+                                if (percentage >= 70) {
+                                    barColor = '#ef4444';
+                                    statusText = 'Плагиат';
+                                    statusIcon = '🚨';
+                                } else if (percentage >= 30) {
+                                    barColor = '#f59e0b';
+                                    statusText = 'Похожий';
+                                    statusIcon = '⚠️';
+                                } else {
+                                    barColor = '#10b981';
+                                    statusText = 'Оригинал';
+                                    statusIcon = '✅';
+                                }
+                                
+                                let medal = '';
+                                if (rank === 0) medal = '🥇';
+                                else if (rank === 1) medal = '🥈';
+                                else if (rank === 2) medal = '🥉';
+                                
+                                return `
+                                    <div style="
+                                        display: flex;
+                                        align-items: center;
+                                        gap: 12px;
+                                        padding: 12px;
+                                        margin-bottom: 8px;
+                                        background: var(--surface);
+                                        border-radius: 8px;
+                                        border-left: 3px solid ${barColor};
+                                        transition: all 0.3s ease;
+                                    " onmouseover="this.style.transform='translateX(4px)'" 
+                                       onmouseout="this.style.transform='translateX(0)'">
+                                        
+                                        <div style="
+                                            width: 36px;
+                                            height: 36px;
+                                            border-radius: 50%;
+                                            background: linear-gradient(135deg, var(--primary), var(--secondary));
+                                            display: flex;
+                                            align-items: center;
+                                            justify-content: center;
+                                            font-size: 16px;
+                                            font-weight: 800;
+                                            color: white;
+                                            flex-shrink: 0;
+                                        ">
+                                            ${medal || (rank + 1)}
+                                        </div>
+                                        
+                                        <div style="flex: 1; min-width: 0;">
+                                            <div style="font-weight: 600; font-size: 14px; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                                                ${doc.title}
+                                            </div>
+                                            <div style="font-size: 11px; color: var(--text-muted);">
+                                                ID: ${doc.id}
+                                            </div>
+                                            <div style="
+                                                width: 100%;
+                                                height: 6px;
+                                                background: rgba(148, 163, 184, 0.2);
+                                                border-radius: 3px;
+                                                overflow: hidden;
+                                                margin-top: 6px;
+                                            ">
+                                                <div style="
+                                                    width: ${percentage}%;
+                                                    height: 100%;
+                                                    background: ${barColor};
+                                                    border-radius: 3px;
+                                                    transition: width 0.6s ease;
+                                                "></div>
+                                            </div>
+                                        </div>
+                                        
+                                        <div style="
+                                            display: flex;
+                                            flex-direction: column;
+                                            align-items: flex-end;
+                                            gap: 2px;
+                                            flex-shrink: 0;
+                                        ">
+                                            <div style="
+                                                font-size: 20px;
+                                                font-weight: 800;
+                                                color: ${barColor};
+                                                line-height: 1;
+                                            ">
+                                                ${percentage}%
+                                            </div>
+                                            <div style="
+                                                font-size: 10px;
+                                                color: var(--text-muted);
+                                                display: flex;
+                                                align-items: center;
+                                                gap: 2px;
+                                            ">
+                                                <span>${statusIcon}</span>
+                                                <span>${statusText}</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                `;
+                            }).join('');
+                        })()}
+                        
+                        ${data.similarities.length > 10 ? `
+                            <div style="
+                                text-align: center;
+                                padding: 12px;
+                                margin-top: 8px;
+                                background: var(--surface);
+                                border-radius: 8px;
+                                color: var(--text-muted);
+                                font-size: 13px;
+                            ">
+                                <span class="material-icons" style="vertical-align: middle; font-size: 16px;">more_horiz</span>
+                                ещё ${data.similarities.length - 10} документов
                             </div>
-                        `;
-                    }).join('')}
-                    ${data.similarities.length > 10 ? `<p style="margin-top: 8px; text-align: center; color: var(--text-muted);">... и ещё ${data.similarities.length - 10} документов</p>` : ''}
+                        ` : ''}
+                    </div>
+                </div>
+
+                <!-- СТАТИСТИКА РАСПРЕДЕЛЕНИЯ -->
+                <div class="card" style="background: var(--surface-light);">
+                    <h4 style="margin-bottom: 16px; display: flex; align-items: center; gap: 8px;">
+                        <span class="material-icons">pie_chart</span>
+                        Распределение по категориям схожести
+                    </h4>
+                    
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
+                        <div style="
+                            padding: 16px;
+                            background: var(--surface);
+                            border-radius: 10px;
+                            border-top: 4px solid #ef4444;
+                        ">
+                            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                                <span style="font-size: 24px;">🚨</span>
+                                <span style="font-weight: 600; color: var(--text);">Плагиат (≥70%)</span>
+                            </div>
+                            <div style="font-size: 36px; font-weight: 800; color: #ef4444; margin-bottom: 4px;">
+                                ${highSimilarities}
+                            </div>
+                            <div style="font-size: 13px; color: var(--text-muted);">
+                                ${Math.round(highSimilarities / data.similarities.length * 100)}% от всех документов
+                            </div>
+                        </div>
+                        
+                        <div style="
+                            padding: 16px;
+                            background: var(--surface);
+                            border-radius: 10px;
+                            border-top: 4px solid #f59e0b;
+                        ">
+                            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                                <span style="font-size: 24px;">⚠️</span>
+                                <span style="font-weight: 600; color: var(--text);">Похожие (30-70%)</span>
+                            </div>
+                            <div style="font-size: 36px; font-weight: 800; color: #f59e0b; margin-bottom: 4px;">
+                                ${mediumSimilarities}
+                            </div>
+                            <div style="font-size: 13px; color: var(--text-muted);">
+                                ${Math.round(mediumSimilarities / data.similarities.length * 100)}% от всех документов
+                            </div>
+                        </div>
+                        
+                        <div style="
+                            padding: 16px;
+                            background: var(--surface);
+                            border-radius: 10px;
+                            border-top: 4px solid #10b981;
+                        ">
+                            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                                <span style="font-size: 24px;">✅</span>
+                                <span style="font-weight: 600; color: var(--text);">Оригиналы (<30%)</span>
+                            </div>
+                            <div style="font-size: 36px; font-weight: 800; color: #10b981; margin-bottom: 4px;">
+                                ${lowSimilarities}
+                            </div>
+                            <div style="font-size: 13px; color: var(--text-muted);">
+                                ${Math.round(lowSimilarities / data.similarities.length * 100)}% от всех документов
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         `;
@@ -907,13 +1226,19 @@ async function runRecursiveAnalysis() {
     }
 }
 
-
-// Статистика по авторам
 async function showAuthorStats() {
     const resultDiv = document.getElementById('authorStatsResult');
+    if (!resultDiv) {
+        console.error('Элемент authorStatsResult не найден!');
+        alert('Ошибка: не найден контейнер для результатов');
+        return;
+    }
+    
     const btn = event.target;
     btn.disabled = true;
-    btn.innerHTML = '<span class="material-icons rotating">sync</span> Загрузка...';
+    btn.innerHTML = '<div class="loading"></div> Загрузка...';
+    
+    resultDiv.innerHTML = '<p style="text-align: center; padding: 20px;"><div class="loading"></div></p>';
     
     try {
         const response = await fetch(`${API_URL}/stats/authors`, {
@@ -922,32 +1247,111 @@ async function showAuthorStats() {
         const data = await response.json();
         
         if (!response.ok) {
-            throw new Error(data.error);
+            throw new Error(data.error || 'Ошибка загрузки');
         }
+        
+        const maxCount = Math.max(...data.authors.map(a => a.document_count));
         
         let html = `
             <div style="margin-top: 24px;">
-                <div class="info-box" style="margin-bottom: 16px;">
-                    <p><strong>🔧 Метод:</strong> ${data.method}</p>
-                    <p style="margin-top: 8px;"><strong>👥 Всего авторов:</strong> ${data.total_authors}</p>
+                <div class="card" style="background: linear-gradient(135deg, var(--primary), var(--secondary)); color: white; margin-bottom: 20px;">
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px;">
+                        <div>
+                            <div style="font-size: 32px; font-weight: 800; margin-bottom: 4px;">
+                                ${data.total_authors}
+                            </div>
+                            <div style="font-size: 13px; opacity: 0.9;">
+                                Всего авторов
+                            </div>
+                        </div>
+                        <div>
+                            <div style="font-size: 32px; font-weight: 800; margin-bottom: 4px;">
+                                ${data.authors.reduce((sum, a) => sum + a.document_count, 0)}
+                            </div>
+                            <div style="font-size: 13px; opacity: 0.9;">
+                                Всего документов
+                            </div>
+                        </div>
+                        <div>
+                            <div style="font-size: 32px; font-weight: 800; margin-bottom: 4px;">
+                                ${maxCount}
+                            </div>
+                            <div style="font-size: 13px; opacity: 0.9;">
+                                Максимум у одного автора
+                            </div>
+                        </div>
+                    </div>
                 </div>
         `;
         
         data.authors.forEach((author, index) => {
-            const barWidth = (author.document_count / Math.max(...data.authors.map(a => a.document_count))) * 100;
+            const barWidth = (author.document_count / maxCount) * 100;
+            
+            let medal = '';
+            if (index === 0) medal = '🥇';
+            else if (index === 1) medal = '🥈';
+            else if (index === 2) medal = '🥉';
+            
             html += `
-                <div class="doc-item" style="margin-bottom: 12px;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                        <div class="doc-title">${index + 1}. ${author.author}</div>
-                        <span class="badge" style="background: var(--primary); color: white;">
-                            ${author.document_count} документов
-                        </span>
+                <div style="
+                    padding: 16px;
+                    margin-bottom: 12px;
+                    background: var(--surface);
+                    border-radius: 12px;
+                    border-left: 4px solid var(--primary);
+                    transition: all 0.3s;
+                " onmouseover="this.style.transform='translateX(4px)'" 
+                   onmouseout="this.style.transform='translateX(0)'">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                            <div style="
+                                width: 40px;
+                                height: 40px;
+                                border-radius: 50%;
+                                background: linear-gradient(135deg, var(--primary), var(--secondary));
+                                display: flex;
+                                align-items: center;
+                                justify-content: center;
+                                font-size: 18px;
+                                font-weight: 800;
+                                color: white;
+                            ">
+                                ${medal || (index + 1)}
+                            </div>
+                            <div>
+                                <div style="font-weight: 700; font-size: 16px; margin-bottom: 2px;">
+                                    ${author.author}
+                                </div>
+                                <div style="font-size: 12px; color: var(--text-muted);">
+                                    👤 @${author.username}
+                                </div>
+                            </div>
+                        </div>
+                        <div style="
+                            background: linear-gradient(135deg, var(--primary), var(--secondary));
+                            color: white;
+                            padding: 8px 16px;
+                            border-radius: 20px;
+                            font-weight: 700;
+                            font-size: 14px;
+                        ">
+                            ${author.document_count} ${author.document_count === 1 ? 'документ' : author.document_count < 5 ? 'документа' : 'документов'}
+                        </div>
                     </div>
-                    <div class="doc-meta" style="margin-bottom: 12px;">
-                        👤 @${author.username}
-                    </div>
-                    <div style="background: var(--background); height: 8px; border-radius: 4px; overflow: hidden;">
-                        <div style="background: var(--primary); height: 100%; width: ${barWidth}%; transition: width 0.3s;"></div>
+                    <div style="
+                        width: 100%;
+                        height: 8px;
+                        background: rgba(148, 163, 184, 0.2);
+                        border-radius: 4px;
+                        overflow: hidden;
+                    ">
+                        <div style="
+                            height: 100%;
+                            width: ${barWidth}%;
+                            background: linear-gradient(90deg, var(--primary), var(--secondary));
+                            border-radius: 4px;
+                            transition: width 0.6s ease;
+                        "></div>
                     </div>
                 </div>
             `;
@@ -968,10 +1372,12 @@ async function showAuthorStats() {
         btn.innerHTML = '<span class="material-icons">bar_chart</span> Показать статистику';
     }
 }
+// Остальные функции остаются без изменений...
 
 // Обновляем applyFilters для работы с датами
 async function applyFilters() {
     const author = document.getElementById('filterAuthor').value.trim();
+    const title = document.getElementById('filterTitle').value.trim();
     const minLength = document.getElementById('filterMinLength').value;
     const dateFrom = document.getElementById('filterDateFrom').value;
     const dateTo = document.getElementById('filterDateTo').value;
@@ -979,9 +1385,11 @@ async function applyFilters() {
     let url = `${API_URL}/documents?`;
     
     if (author) url += `author=${encodeURIComponent(author)}&`;
+    if (title) url += `title=${encodeURIComponent(title)}&`;
     if (minLength) url += `min_length=${minLength}&`;
     if (dateFrom) url += `date_from=${dateFrom}&`;
     if (dateTo) url += `date_to=${dateTo}&`;
+    
     
     try {
         const response = await fetch(url, { credentials: 'include' });
