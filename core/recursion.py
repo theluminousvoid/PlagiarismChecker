@@ -6,7 +6,7 @@
 from typing import Tuple
 from core.domain import Document, Submission
 from core.transforms import normalize, tokenize, ngrams, jaccard
-from core.compose import text_processing_pipeline  # НОВОЕ: импорт композиции
+from core.compose import text_processing_pipeline
 
 
 def _text_to_ngrams(text: str, n: int = 3) -> Tuple[Tuple[str, ...], ...]:
@@ -45,7 +45,7 @@ def compare_submissions_recursive(
     # Рекурсивный случай: обработать текущую проверку
     current_sub = subs[idx]
     
-    # НОВОЕ: используем композицию вместо трех отдельных вызовов
+    # Используем композицию вместо трех отдельных вызовов
     sub_ngrams = _text_to_ngrams(current_sub.text, n)
     
     # Найти максимальную схожесть с документами
@@ -93,7 +93,7 @@ def _find_max_similarity_recursive(
             sub_id
         )
     
-    # НОВОЕ: используем композицию
+    # Используем композицию
     doc_ngrams = _text_to_ngrams(doc.text, n)
     
     similarity = jaccard(sub_ngrams, doc_ngrams)
@@ -131,7 +131,10 @@ def tree_walk_documents(
         visited = tuple()
     
     # Базовые случаи
-    if depth >= max_depth or root >= len(docs):
+    if depth >= max_depth:
+        return visited
+    
+    if root >= len(docs):
         return visited
     
     current_doc = docs[root]
@@ -164,7 +167,6 @@ def _find_most_similar_doc(
     Найти индекс наиболее похожего непосещенного документа.
     Использует композицию для обработки текста.
     """
-    # НОВОЕ: используем композицию
     current_ngrams = _text_to_ngrams(current.text, 3)
     
     best_idx = None
@@ -175,7 +177,6 @@ def _find_most_similar_doc(
         if doc.id in visited:
             continue
         
-        # НОВОЕ: используем композицию
         doc_ngrams = _text_to_ngrams(doc.text, 3)
         similarity = jaccard(current_ngrams, doc_ngrams)
         
