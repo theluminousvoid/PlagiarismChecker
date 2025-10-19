@@ -1,6 +1,15 @@
 """
 Функциональные типы Maybe и Either для безопасной обработки ошибок
-Лаба №4: Функциональные паттерны: Maybe/Either
+Функциональные паттерны: Maybe/Either
+Методы: 
+        just(value) -	Создаёт контейнер с данными	| value
+        nothing() -  Создаёт "пустой" контейнер	| None
+        is_just() / is_nothing()  -	Проверяет, есть ли значение	| value is not None
+        get(default) -	Возвращает значение или default	| value or default
+        map(func) -	Применяет функцию, если значение есть |	list comprehension
+        flat_map(func) -	То же, но если func возвращает | Maybe	"чистая композиция"
+        filter(pred) -	Оставляет значение, если предикат | True	if condition:
+        or_else(default) -	Возвращает значение или | default	value or default
 """
 
 from typing import TypeVar, Generic, Callable, Union, Tuple
