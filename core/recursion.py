@@ -3,7 +3,7 @@
 Лямбда и замыкания + рекурсия
 Использование композиции функций
 """
-from typing import Tuple
+from typing import Any, Iterable, Tuple
 from core.domain import Document, Submission
 from core.transforms import normalize, tokenize, ngrams, jaccard
 from core.compose import text_processing_pipeline
@@ -209,3 +209,56 @@ def count_documents_by_author_recursive(
     new_count = count + (1 if author.lower() in current_doc.author.lower() else 0)
     
     return count_documents_by_author_recursive(docs, author, idx + 1, new_count)
+
+def flatten_nested_tuples(items: Tuple[Any, ...]) -> Tuple[Any, ...]:
+    """
+    Рекурсивно расплющивает вложенные tuples в один плоский tuple.
+    Примеры:
+      ((1, 2), 3, (4, (5, 6))) -> (1, 2, 3, 4, 5, 6)
+      () -> ()
+    """
+    flat: Tuple[Any, ...] = ()
+    for x in items:
+        if isinstance(x, tuple):
+            flat = flat + flatten_nested_tuples(x)
+        else:
+            flat = flat + (x,)
+    return flat
+
+
+def sum_tuple_recursive(values: Tuple[float, ...]) -> float:
+    """
+    Рекурсивная сумма чисел в кортеже. Пустой кортеж даёт 0.0.
+    """
+    if not values:
+        return 0.0
+    if len(values) == 1:
+        return float(values[0])
+    mid = len(values) // 2
+    return sum_tuple_recursive(values[:mid]) + sum_tuple_recursive(values[mid:])
+
+
+def calculate_similarity_matrix_recursive(
+    subs: Tuple["Submission", ...],
+    docs: Tuple["Document", ...],
+    n: int = 3,
+    s_idx: int = 0,
+    acc: Tuple[Tuple[float, ...], ...] = ()
+) -> Tuple[Tuple[float, ...], ...]:
+    """
+    Рекурсивно строит матрицу схожести |subs| x |docs| по Жаккару.
+    Для каждой submission считает схожесть со всеми документами.
+    """
+    # базовый случай
+    if s_idx >= len(subs):
+        return acc
+
+    sub = subs[s_idx]
+    sub_ngrams = _text_to_ngrams(sub.text, n)
+
+    row: Tuple[float, ...] = ()
+    for d in docs:
+        doc_ngrams = _text_to_ngrams(d.text, n)
+        row = row + (jaccard(sub_ngrams, doc_ngrams),)
+
+    return calculate_similarity_matrix_recursive(subs, docs, n, s_idx + 1, acc + (row,))
