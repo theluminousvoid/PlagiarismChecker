@@ -586,7 +586,6 @@ def get_checks_history():
 @app.route('/api/analytics/recursive', methods=['GET'])
 @admin_required
 def analytics_recursive():
-    """Рекурсивный анализ"""
     try:
         conn = get_db()
         c = conn.cursor()
@@ -689,10 +688,20 @@ def analytics_recursive():
             for doc_id in doc_tree
         ]
         
+        # ИСПРАВЛЕНИЕ: Добавляем массив all_documents с полной информацией
+        all_documents_info = [
+            {
+                'id': str(d['id']),
+                'title': d['title']
+            }
+            for d in docs_data
+        ]
+        
         return jsonify({
             'similarities': list(similarities),
             'document_tree': list(doc_tree),
             'tree_with_titles': tree_with_titles,
+            'all_documents': all_documents_info,  # ← ДОБАВИЛИ ЭТО!
             'message': 'Анализ завершён'
         })
         
