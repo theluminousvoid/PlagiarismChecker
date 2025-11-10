@@ -373,13 +373,14 @@ def get_documents():
         })
     
     return jsonify(result)
+
 @app.route('/api/check/<int:doc_id>', methods=['POST'])
 @admin_required
 def check_document(doc_id):
-    """Проверить документ на плагиат с настраиваемым порогом"""
+    """Проверить документ на плагиат с реал-тайм прогрессом"""
     data = request.json
     n = data.get('n', 3)
-    threshold = data.get('threshold', 0.0)  # НОВОЕ: порог схожести
+    threshold = data.get('threshold', 0.0)
     
     conn = get_db()
     c = conn.cursor()
@@ -392,7 +393,7 @@ def check_document(doc_id):
         conn.close()
         return jsonify({'error': 'Документ не найден'}), 404
     
-    # Получаем все остальные документы для сравнения С АВТОРАМИ через JOIN
+    # Получаем документы для сравнения
     c.execute('''
         SELECT d.*, u.full_name as author_name
         FROM documents d
@@ -400,58 +401,72 @@ def check_document(doc_id):
         WHERE d.id != ?
     ''', (doc_id,))
     other_docs = c.fetchall()
+    conn.close()
     
     if not other_docs:
-        conn.close()
         return jsonify({
             'score': 0.0,
             'matches': [],
             'message': 'Нет документов для сравнения'
         })
     
-    # Преобразуем в объекты Document С АВТОРАМИ
+    # Преобразуем в объекты Document
     compare_docs = tuple(
         Document(
             id=str(d['id']),
             title=d['title'],
             text=d['text'],
-            author=d['author_name'],  # ← ИСПРАВЛЕНО: теперь берём автора из JOIN
+            author=d['author_name'],
             ts=d['created_at']
         )
         for d in other_docs
     )
     
-    # Создаём Submission
-    submission = Submission(
-        id=str(doc_id),
-        user_id=str(doc['user_id']),
-        text=doc['text'],
-        ts=doc['created_at']
-    )
+    # 🚀 ИСПОЛЬЗУЕМ ЛЕНИВЫЕ ВЫЧИСЛЕНИЯ
+    # Сравниваем документы постепенно с минимальным порогом
+    results = []
+    for result in lazy_compare_documents(doc['text'], compare_docs, n, threshold):
+        results.append({
+            'doc_id': result['doc_id'],
+            'doc_title': result['doc_title'],
+            'doc_author': result['doc_author'],
+            'similarity': result['similarity']
+        })
     
-    # Проверяем с мемоизацией
-    result = check_submission_cached(submission, compare_docs, n)
+    # Сортируем по убыванию схожести
+    results.sort(key=lambda x: x['similarity'], reverse=True)
     
-    # НОВОЕ: Фильтруем результаты по порогу
-    if threshold > 0:
-        threshold_filter = create_similarity_threshold(threshold)
-        result['matches'] = [
-            match for match in result['matches']
-            if threshold_filter(match['similarity'])
-        ]
-        result['filtered_by_threshold'] = threshold
+    # Находим максимальную схожесть
+    max_similarity = results[0]['similarity'] if results else 0.0
     
-    # Сохраняем результат проверки
-    matched_doc_id = int(result['matches'][0]['doc_id']) if result['matches'] else None
+    # Сохраняем результат в БД
+    matched_doc_id = int(results[0]['doc_id']) if results else None
+    
+    conn = get_db()
+    c = conn.cursor()
     c.execute('''
         INSERT INTO checks (admin_id, document_id, similarity_score, matched_doc_id)
         VALUES (?, ?, ?, ?)
-    ''', (session['user_id'], doc_id, result['score'], matched_doc_id))
-    
+    ''', (session['user_id'], doc_id, max_similarity, matched_doc_id))
     conn.commit()
     conn.close()
     
-    return jsonify(result)
+    # Статистика
+    sub_normalized = normalize(doc['text'])
+    sub_tokens = tokenize(sub_normalized)
+    sub_ngrams = ngrams(sub_tokens, n)
+    
+    return jsonify({
+        'score': max_similarity,
+        'matches': results[:5],  # Топ-5
+        'filtered_by_threshold': threshold if threshold > 0 else None,
+        'stats': {
+            'tokens': len(sub_tokens),
+            'ngrams': len(sub_ngrams),
+            'documents_checked': len(compare_docs),
+            'cache_used': False  # Ленивые вычисления не используют кэш
+        }
+    })
 
 @app.route('/api/stats', methods=['GET'])
 @login_required
@@ -779,6 +794,69 @@ def check_my_document(doc_id):
     result = check_submission_cached(submission, compare_docs, n)
     
     return jsonify(result)
+
+@app.route('/api/documents/page/<int:page>', methods=['GET'])
+@login_required
+def get_documents_paginated(page):
+    """Получить документы постранично с ленивой загрузкой"""
+    page_size = request.args.get('page_size', 10, type=int)
+    
+    conn = get_db()
+    c = conn.cursor()
+    
+    if session.get('role') == 'user':
+        c.execute('''
+            SELECT d.id, d.title, d.text, d.created_at, u.full_name as author
+            FROM documents d
+            JOIN users u ON d.user_id = u.id
+            WHERE d.user_id = ?
+            ORDER BY d.created_at DESC
+        ''', (session['user_id'],))
+    else:
+        c.execute('''
+            SELECT d.id, d.title, d.text, d.created_at, u.full_name as author, u.username
+            FROM documents d
+            JOIN users u ON d.user_id = u.id
+            ORDER BY d.created_at DESC
+        ''')
+    
+    docs = c.fetchall()
+    conn.close()
+    
+    # Преобразуем в Document
+    all_docs = tuple(
+        Document(
+            id=str(doc['id']),
+            title=doc['title'],
+            text=doc['text'],
+            author=doc['author'],
+            ts=doc['created_at']
+        )
+        for doc in docs
+    )
+    
+    # 🚀 ИСПОЛЬЗУЕМ ЛЕНИВУЮ ПАГИНАЦИЮ
+    page_docs = list(lazy_paginate_documents(all_docs, page_size, page))
+    
+    # Форматируем результат
+    result = []
+    for doc in page_docs:
+        result.append({
+            'id': doc.id,
+            'title': doc.title,
+            'text': doc.text[:200] + '...' if len(doc.text) > 200 else doc.text,
+            'text_full': doc.text,
+            'author': doc.author,
+            'created_at': doc.ts
+        })
+    
+    return jsonify({
+        'documents': result,
+        'page': page,
+        'page_size': page_size,
+        'total': len(all_docs),
+        'has_next': (page + 1) * page_size < len(all_docs)
+    })
 
 if __name__ == '__main__':
     print("🚀 Инициализация базы данных...")
