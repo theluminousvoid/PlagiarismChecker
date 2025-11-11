@@ -1389,3 +1389,18 @@ a:hover::after {
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
 }
+.pagination.horizontal {
+    display: flex;
+    flex-direction: row; /* Горизонтальное направление */
+    align-items: center;
+    gap: 12px; /* Расстояние между элементами */
+}
+
+/* Или базовый стиль для всех пагинаций */
+.pagination {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+    margin: 10px;
+}
