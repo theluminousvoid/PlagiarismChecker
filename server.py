@@ -3,7 +3,7 @@
 PlagiarismChecker API с базой данных и авторизацией
 """
 
-from flask import Flask, jsonify,  request, send_from_directory, session
+from flask import Flask, jsonify, request, send_from_directory, session, Response
 from flask_cors import CORS
 import sqlite3
 import hashlib
@@ -11,14 +11,17 @@ import secrets
 from datetime import datetime
 from pathlib import Path
 from functools import wraps
+import json
 
 # Импорты из наших модулей
 from core.domain import Document, Submission
 from core.transforms import normalize, tokenize, ngrams, jaccard
-from core.closures import by_author, by_title,  by_min_length, compose_filters, by_date_range, create_similarity_threshold
+from core.closures import by_author, by_title, by_min_length, compose_filters, by_date_range, create_similarity_threshold
 from core.memo import check_submission_cached, get_cache_stats
 from core.ftypes import validate_submission
 from core.recursion import compare_submissions_recursive, tree_walk_documents, count_documents_by_author_recursive
+from core.lazy import paginate_documents, progressive_check, filter_documents, batch_process, search_documents
+
 app = Flask(__name__, static_folder='static', template_folder='templates')
 app.secret_key = secrets.token_hex(32)
 
@@ -293,7 +296,10 @@ def upload_document():
 @app.route('/api/documents', methods=['GET'])
 @login_required
 def get_documents():
-    """Получить документы с фильтрами"""
+    """Получить документы с фильтрами и ленивой пагинацией"""
+    page = request.args.get('page', 0, type=int)
+    page_size = request.args.get('page_size', 20, type=int)
+    
     conn = get_db()
     c = conn.cursor()
     
@@ -331,55 +337,238 @@ def get_documents():
         for doc in docs
     )
     
-    # Применяем фильтры
+    # Применяем фильтры с ленивой фильтрацией
     if session.get('role') == 'admin':
         filters = []
         
         # Фильтр по автору
         author = request.args.get('author', '')
         if author:
-            filters.append(by_author(author))
+            filters.append(lambda doc: author.lower() in doc.author.lower())
             
         title_keyword = request.args.get('title', '')
         if title_keyword:
-            filters.append(by_title(title_keyword))
+            filters.append(lambda doc: title_keyword.lower() in doc.title.lower())
         
         # Фильтр по минимальной длине
         min_length = request.args.get('min_length', 0, type=int)
         if min_length > 0:
-            filters.append(by_min_length(min_length))
+            filters.append(lambda doc: len(doc.text) >= min_length)
         
-        # НОВОЕ: Фильтр по диапазону дат
+        # Фильтр по диапазону дат
         date_from = request.args.get('date_from', '')
         date_to = request.args.get('date_to', '')
         if date_from and date_to:
-            filters.append(by_date_range(date_from, date_to))
+            filters.append(lambda doc: date_from <= doc.ts <= date_to)
         
-        # Композиция фильтров
+        # Композиция фильтров с ленивой фильтрацией
         if filters:
-            combined = compose_filters(*filters)
-            documents = tuple(filter(combined, documents))
+            def combined_filter(doc):
+                return all(predicate(doc) for predicate in filters)
+            
+            documents = tuple(filter_documents(documents, combined_filter))
+    
+    # Ленивая пагинация
+    paginated_docs = list(paginate_documents(documents, page_size, page))
     
     # Форматируем ответ
     result = []
-    for doc in documents:
+    for doc in paginated_docs:
         result.append({
             'id': doc.id,
             'title': doc.title,
             'text': doc.text[:200] + '...' if len(doc.text) > 200 else doc.text,
             'text_full': doc.text,
             'author': doc.author,
-            'created_at': doc.ts
+            'created_at': doc.ts,
+            'length': len(doc.text)
         })
     
-    return jsonify(result)
+    return jsonify({
+        'documents': result,
+        'total': len(documents),
+        'page': page,
+        'page_size': page_size
+    })
+
+@app.route('/api/plagiarism/progressive-check', methods=['POST'])
+@login_required
+def progressive_plagiarism_check():
+    """Прогрессивная проверка плагиата с реальным временем"""
+    data = request.json
+    text = data.get('text', '')
+    n = data.get('n', 3)
+    threshold = data.get('threshold', 0.0)
+    
+    if not text:
+        return jsonify({'error': 'Текст не может быть пустым'}), 400
+    
+    conn = get_db()
+    c = conn.cursor()
+    
+    # Получаем все документы для сравнения
+    c.execute('''
+        SELECT d.id, d.title, d.text, d.created_at, u.full_name as author
+        FROM documents d
+        JOIN users u ON d.user_id = u.id
+    ''')
+    docs = c.fetchall()
+    conn.close()
+    
+    # Преобразуем в объекты Document
+    documents = tuple(
+        Document(
+            id=str(doc['id']),
+            title=doc['title'],
+            text=doc['text'],
+            author=doc['author'],
+            ts=doc['created_at']
+        )
+        for doc in docs
+    )
+    
+    def generate():
+        results = []
+        yield 'data: {"status": "started", "total": ' + str(len(documents)) + '}\n\n'
+        
+        # Используем прогрессивную проверку
+        for result in progressive_check(text, documents, n, threshold):
+            results.append(result)
+            yield f"data: {json.dumps(result)}\n\n"
+        
+        # Финальный результат
+        yield f"data: {json.dumps({'status': 'completed', 'total_results': len(results)})}\n\n"
+    
+    return Response(generate(), mimetype='text/event-stream')
+
+@app.route('/api/plagiarism/quick-check', methods=['POST'])
+@login_required
+def quick_plagiarism_check():
+    """Быстрая проверка плагиата с пакетной обработкой"""
+    data = request.json
+    text = data.get('text', '')
+    
+    if not text:
+        return jsonify({'error': 'Текст не может быть пустым'}), 400
+    
+    conn = get_db()
+    c = conn.cursor()
+    
+    # Получаем все документы
+    c.execute('''
+        SELECT d.id, d.title, d.text, d.created_at, u.full_name as author
+        FROM documents d
+        JOIN users u ON d.user_id = u.id
+    ''')
+    docs = c.fetchall()
+    conn.close()
+    
+    # Преобразуем в объекты Document
+    documents = tuple(
+        Document(
+            id=str(doc['id']),
+            title=doc['title'],
+            text=doc['text'],
+            author=doc['author'],
+            ts=doc['created_at']
+        )
+        for doc in docs
+    )
+    
+    # Быстрая проверка по батчам
+    quick_results = []
+    for batch in batch_process(documents, batch_size=10):
+        batch_matches = []
+        for doc in batch:
+            # Быстрая проверка по первым 200 символам
+            if text[:100].lower() in doc.text.lower():
+                similarity = jaccard(
+                    set(ngrams(tokenize(normalize(text[:200])), 2)),
+                    set(ngrams(tokenize(normalize(doc.text[:200])), 2))
+                )
+                if similarity > 0.1:
+                    batch_matches.append({
+                        'doc_id': doc.id,
+                        'doc_title': doc.title,
+                        'doc_author': doc.author,
+                        'similarity': similarity,
+                        'reason': 'Возможное совпадение'
+                    })
+        
+        if batch_matches:
+            quick_results.extend(batch_matches)
+    
+    return jsonify({
+        'quick_results': quick_results,
+        'total_checked': len(documents),
+        'message': 'Быстрая проверка завершена'
+    })
+
+@app.route('/api/search/documents', methods=['GET'])
+@login_required
+def search_documents_route():
+    """Поиск по документам с ленивыми результатами"""
+    query = request.args.get('q', '')
+    
+    if not query:
+        return jsonify({'results': []})
+    
+    conn = get_db()
+    c = conn.cursor()
+    
+    # Получаем документы в зависимости от роли
+    if session.get('role') == 'user':
+        c.execute('''
+            SELECT d.id, d.title, d.text, d.created_at, u.full_name as author
+            FROM documents d
+            JOIN users u ON d.user_id = u.id
+            WHERE d.user_id = ?
+        ''', (session['user_id'],))
+    else:
+        c.execute('''
+            SELECT d.id, d.title, d.text, d.created_at, u.full_name as author
+            FROM documents d
+            JOIN users u ON d.user_id = u.id
+        ''')
+    
+    docs = c.fetchall()
+    conn.close()
+    
+    # Преобразуем в объекты Document
+    documents = tuple(
+        Document(
+            id=str(doc['id']),
+            title=doc['title'],
+            text=doc['text'],
+            author=doc['author'],
+            ts=doc['created_at']
+        )
+        for doc in docs
+    )
+    
+    # Используем ленивый поиск
+    search_results = []
+    for doc, relevance in search_documents(documents, query):
+        search_results.append({
+            'document': {
+                'id': doc.id,
+                'title': doc.title,
+                'text': doc.text[:150] + '...' if len(doc.text) > 150 else doc.text,
+                'author': doc.author,
+                'created_at': doc.ts
+            },
+            'relevance': relevance
+        })
+    
+    return jsonify({'results': search_results})
+
 @app.route('/api/check/<int:doc_id>', methods=['POST'])
 @admin_required
 def check_document(doc_id):
     """Проверить документ на плагиат с настраиваемым порогом"""
     data = request.json
     n = data.get('n', 3)
-    threshold = data.get('threshold', 0.0)  # НОВОЕ: порог схожести
+    threshold = data.get('threshold', 0.0)
     
     conn = get_db()
     c = conn.cursor()
@@ -415,7 +604,7 @@ def check_document(doc_id):
             id=str(d['id']),
             title=d['title'],
             text=d['text'],
-            author=d['author_name'],  # ← ИСПРАВЛЕНО: теперь берём автора из JOIN
+            author=d['author_name'],
             ts=d['created_at']
         )
         for d in other_docs
@@ -432,7 +621,7 @@ def check_document(doc_id):
     # Проверяем с мемоизацией
     result = check_submission_cached(submission, compare_docs, n)
     
-    # НОВОЕ: Фильтруем результаты по порогу
+    # Фильтруем результаты по порогу
     if threshold > 0:
         threshold_filter = create_similarity_threshold(threshold)
         result['matches'] = [
@@ -541,8 +730,57 @@ def get_author_stats():
         'total_authors': len(author_stats),
         'method': 'recursive_count'
     })
- 
 
+@app.route('/api/analytics/batch-stats', methods=['GET'])
+@admin_required
+def get_batch_stats():
+    """Статистика с пакетной обработкой документов"""
+    conn = get_db()
+    c = conn.cursor()
+    
+    c.execute('''
+        SELECT d.*, u.full_name as author_name
+        FROM documents d
+        JOIN users u ON d.user_id = u.id
+    ''')
+    docs_data = c.fetchall()
+    conn.close()
+    
+    # Преобразуем в объекты Document
+    documents = tuple(
+        Document(
+            id=str(d['id']),
+            title=d['title'],
+            text=d['text'],
+            author=d['author_name'],
+            ts=d['created_at']
+        )
+        for d in docs_data
+    )
+    
+    # Обрабатываем документы батчами
+    batch_stats = []
+    total_chars = 0
+    total_docs = len(documents)
+    
+    for i, batch in enumerate(batch_process(documents, batch_size=5)):
+        batch_info = {
+            'batch': i + 1,
+            'documents': len(batch),
+            'total_chars': sum(len(doc.text) for doc in batch),
+            'avg_chars': sum(len(doc.text) for doc in batch) // len(batch),
+            'authors': list(set(doc.author for doc in batch))
+        }
+        batch_stats.append(batch_info)
+        total_chars += batch_info['total_chars']
+    
+    return jsonify({
+        'total_documents': total_docs,
+        'total_characters': total_chars,
+        'average_length': total_chars // total_docs if total_docs > 0 else 0,
+        'batches': batch_stats,
+        'batch_size': 5
+    })
 
 @app.route('/api/checks/history', methods=['GET'])
 @admin_required
@@ -701,7 +939,7 @@ def analytics_recursive():
             'similarities': list(similarities),
             'document_tree': list(doc_tree),
             'tree_with_titles': tree_with_titles,
-            'all_documents': all_documents_info,  # ← ДОБАВИЛИ ЭТО!
+            'all_documents': all_documents_info,
             'message': 'Анализ завершён'
         })
         
@@ -714,7 +952,6 @@ def analytics_recursive():
             'error': f'Ошибка: {str(e)}'
         }), 500
 
-        
 @app.route('/api/check-my-document/<int:doc_id>', methods=['POST'])
 @login_required
 def check_my_document(doc_id):
