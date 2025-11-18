@@ -1,13 +1,11 @@
 """
 Система событий для реального времени.
-Исправленная версия с работающим мониторингом.
+Работает только с реальными событиями.
 """
 
-from typing import Callable, Dict, List, Any, Tuple
+from typing import Callable, Dict, List, Any
 from dataclasses import dataclass, field
 from datetime import datetime
-from functools import reduce
-import time
 
 
 @dataclass(frozen=True)
@@ -45,7 +43,6 @@ class MonitoringData:
 class EventBus:
     """
     Шина событий для реактивного программирования.
-    Обеспечивает связь между компонентами через события.
     """
     
     def __init__(self):
@@ -55,17 +52,13 @@ class EventBus:
         self._max_history = 200
     
     def subscribe(self, event_name: str, handler: Callable[[Event], None]) -> None:
-        """
-        Подписаться на событие.
-        """
+        """Подписаться на событие"""
         if event_name not in self._subscribers:
             self._subscribers[event_name] = []
         self._subscribers[event_name].append(handler)
     
     def publish(self, event_name: str, payload: Dict[str, Any]) -> None:
-        """
-        Опубликовать событие.
-        """
+        """Опубликовать событие"""
         event = Event(
             name=event_name,
             ts=datetime.utcnow().isoformat() + 'Z',
@@ -86,9 +79,7 @@ class EventBus:
                 print(f"Error in event handler {handler.__name__}: {e}")
     
     def get_history(self, event_name: str = None, limit: int = 50) -> List[Event]:
-        """
-        Получить историю событий.
-        """
+        """Получить историю событий"""
         history = self._event_history
         
         if event_name:
@@ -104,15 +95,14 @@ event_bus = EventBus()
 # ===== ОБРАБОТЧИКИ СОБЫТИЙ =====
 
 def handle_text_submitted(event: Event) -> None:
-    """
-    Обработчик загрузки текста.
-    """
+    """Обработчик загрузки текста"""
     submission_data = {
         'type': 'submission',
         'doc_id': event.payload.get('doc_id', 'unknown'),
         'title': event.payload.get('title', 'Без названия'),
         'user_id': event.payload.get('user_id', 'unknown'),
         'username': event.payload.get('username', 'Unknown'),
+        'full_name': event.payload.get('full_name', 'Unknown'),
         'timestamp': event.ts,
         'text_length': len(event.payload.get('text', ''))
     }
@@ -120,15 +110,15 @@ def handle_text_submitted(event: Event) -> None:
 
 
 def handle_check_done(event: Event) -> None:
-    """
-    Обработчик завершения проверки.
-    """
+    """Обработчик завершения проверки"""
     similarity = event.payload.get('similarity', 0)
     
     check_data = {
         'type': 'check_result',
         'doc_id': event.payload.get('doc_id', 'unknown'),
         'doc_title': event.payload.get('doc_title', 'Без названия'),
+        'author_username': event.payload.get('author_username', 'Unknown'),
+        'author_full_name': event.payload.get('author_full_name', 'Unknown'),
         'similarity': similarity,
         'admin_id': event.payload.get('admin_id', 'unknown'),
         'admin_name': event.payload.get('admin_name', 'Unknown'),
@@ -143,6 +133,8 @@ def handle_check_done(event: Event) -> None:
             'type': 'alert',
             'doc_id': event.payload.get('doc_id', 'unknown'),
             'doc_title': event.payload.get('doc_title', 'Без названия'),
+            'author_username': event.payload.get('author_username', 'Unknown'),
+            'author_full_name': event.payload.get('author_full_name', 'Unknown'),
             'similarity': similarity,
             'severity': 'high' if similarity > 0.9 else 'medium',
             'message': f'Обнаружено подозрительное совпадение: {round(similarity * 100)}%',
@@ -153,12 +145,13 @@ def handle_check_done(event: Event) -> None:
 
 
 def handle_alert(event: Event) -> None:
-    """
-    Обработчик критических событий.
-    """
+    """Обработчик критических событий"""
     alert_data = {
         'type': 'alert',
         'doc_id': event.payload.get('doc_id', 'unknown'),
+        'doc_title': event.payload.get('doc_title', 'Без названия'),
+        'author_username': event.payload.get('author_username', 'Unknown'),
+        'author_full_name': event.payload.get('author_full_name', 'Unknown'),
         'similarity': event.payload.get('similarity', 0),
         'severity': event.payload.get('severity', 'medium'),
         'message': event.payload.get('message', 'Неизвестное событие'),
@@ -179,23 +172,17 @@ def setup_event_handlers():
 # ===== ВИТРИНЫ (VIEWS) =====
 
 def get_recent_submissions(limit: int = 10) -> List[Dict]:
-    """
-    Витрина: последние загруженные тексты.
-    """
+    """Витрина: последние загруженные тексты"""
     return event_bus.monitoring_data.submissions[:limit]
 
 
 def get_check_results(limit: int = 20) -> List[Dict]:
-    """
-    Витрина: результаты проверок.
-    """
+    """Витрина: результаты проверок"""
     return event_bus.monitoring_data.check_results[:limit]
 
 
 def get_suspicious_matches(threshold: float = 0.7) -> List[Dict]:
-    """
-    Витрина: подозрительные совпадения.
-    """
+    """Витрина: подозрительные совпадения"""
     # Берем из check_results с высокой схожестью
     suspicious_checks = [
         check for check in event_bus.monitoring_data.check_results
@@ -222,9 +209,7 @@ def get_suspicious_matches(threshold: float = 0.7) -> List[Dict]:
 
 
 def get_activity_stats() -> Dict:
-    """
-    Статистика активности системы.
-    """
+    """Статистика активности системы"""
     total_events = len(event_bus._event_history)
     
     return {
@@ -236,82 +221,5 @@ def get_activity_stats() -> Dict:
     }
 
 
-# ===== ТЕСТОВЫЕ ДАННЫЕ ДЛЯ ДЕМОНСТРАЦИИ =====
-
-def add_demo_data():
-    """Добавить тестовые данные для демонстрации"""
-    demo_time = datetime.utcnow().isoformat() + 'Z'
-    
-    # Демо-загрузки
-    demo_submissions = [
-        {
-            'type': 'submission',
-            'doc_id': 'demo1',
-            'title': 'Исследование искусственного интеллекта',
-            'user_id': 'user123',
-            'username': 'ivanov',
-            'timestamp': demo_time,
-            'text_length': 2450
-        },
-        {
-            'type': 'submission', 
-            'doc_id': 'demo2',
-            'title': 'Анализ современных технологий',
-            'user_id': 'user456',
-            'username': 'petrov',
-            'timestamp': demo_time,
-            'text_length': 1800
-        }
-    ]
-    
-    # Демо-проверки
-    demo_checks = [
-        {
-            'type': 'check_result',
-            'doc_id': 'check1',
-            'doc_title': 'Сравнительный анализ алгоритмов',
-            'similarity': 0.85,
-            'admin_id': 'admin1',
-            'admin_name': 'Администратор',
-            'timestamp': demo_time,
-            'status': 'high'
-        },
-        {
-            'type': 'check_result',
-            'doc_id': 'check2', 
-            'doc_title': 'Введение в машинное обучение',
-            'similarity': 0.45,
-            'admin_id': 'admin1',
-            'admin_name': 'Администратор',
-            'timestamp': demo_time,
-            'status': 'medium'
-        }
-    ]
-    
-    # Демо-алерты
-    demo_alerts = [
-        {
-            'type': 'alert',
-            'doc_id': 'alert1',
-            'doc_title': 'Критическое совпадение',
-            'similarity': 0.92,
-            'severity': 'high',
-            'message': 'Обнаружено критическое совпадение: 92%',
-            'timestamp': demo_time,
-            'requires_attention': True
-        }
-    ]
-    
-    # Добавляем демо-данные
-    for submission in demo_submissions:
-        event_bus.monitoring_data.add_submission(submission)
-    
-    for check in demo_checks:
-        event_bus.monitoring_data.add_check_result(check)
-    
-    for alert in demo_alerts:
-        event_bus.monitoring_data.add_alert(alert)
-
-# Добавляем демо-данные при инициализации (можно убрать в продакшене)
+# Инициализация обработчиков
 setup_event_handlers()
-add_demo_data()
