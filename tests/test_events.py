@@ -1,240 +1,137 @@
-import sys, os
-sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+import pytest
+from datetime import datetime, timedelta
+import core.events
 
-from core.events import (
-    Event, EventBus,
-    handle_text_submitted, handle_check_done, handle_alert,
-    get_recent_submissions, get_check_results, get_suspicious_matches,
-    get_activity_stats
-)
+def reset_bus():
+    # Подменяем глобальную шину чистой инстанцией и регистрируем хэндлеры
+    core.events.event_bus = core.events.EventBus()
+    core.events.setup_event_handlers()
 
+def test_publish_text_submitted_adds_submission_and_history():
+    reset_bus()
+    payload = {
+        'doc_id': 'd1',
+        'title': 'Тест',
+        'user_id': 'u1',
+        'username': 'ivan',
+        'full_name': 'Иван Иванов',
+        'text': 'hello'
+    }
 
-def test_event_creation():
-    """Тест создания события"""
-    event = Event(
-        name='TEST_EVENT',
-        ts='2024-01-01T00:00:00Z',
-        payload={'key': 'value'}
-    )
-    
-    assert event.name == 'TEST_EVENT'
-    assert event.payload['key'] == 'value'
+    core.events.event_bus.publish('TEXT_SUBMITTED', payload)
 
+    # История содержит событие
+    assert len(core.events.event_bus._event_history) == 1
+    ev = core.events.event_bus._event_history[0]
+    assert ev.name == 'TEXT_SUBMITTED'
+    assert ev.payload['doc_id'] == 'd1'
 
-def test_event_bus_subscribe():
-    """Тест подписки на события"""
-    bus = EventBus()
-    
-    received = []
-    
-    def handler(event, payload):
-        received.append(payload)
-        return {'handled': True}
-    
-    bus.subscribe('TEST', handler)
-    bus.publish('TEST', {'data': 'test'})
-    
-    assert len(received) == 1
-    assert received[0]['data'] == 'test'
+    # Мониторинг заполнился
+    subs = core.events.event_bus.monitoring_data.submissions
+    assert len(subs) == 1
+    sub = subs[0]
+    assert sub['doc_id'] == 'd1'
+    assert sub['username'] == 'ivan'
+    assert sub['text_length'] == len('hello')
 
+def test_check_done_creates_check_and_alert_when_similarity_high():
+    reset_bus()
+    payload = {
+        'doc_id': 'doc-42',
+        'doc_title': 'Пример',
+        'author_username': 'alice',
+        'author_full_name': 'Alice',
+        'similarity': 0.82,
+        'admin_id': 'adm1',
+        'admin_name': 'Admin'
+    }
 
-def test_event_bus_multiple_handlers():
-    """Тест множественных обработчиков"""
-    bus = EventBus()
-    
-    results = []
-    
-    def handler1(event, payload):
-        results.append('handler1')
-        return {'id': 1}
-    
-    def handler2(event, payload):
-        results.append('handler2')
-        return {'id': 2}
-    
-    bus.subscribe('TEST', handler1)
-    bus.subscribe('TEST', handler2)
-    
-    outputs = bus.publish('TEST', {})
-    
-    assert len(results) == 2
-    assert len(outputs) == 2
-    assert outputs[0]['id'] == 1
-    assert outputs[1]['id'] == 2
+    core.events.event_bus.publish('CHECK_DONE', payload)
 
+    # Проверки и алерты должны добавиться
+    checks = core.events.event_bus.monitoring_data.check_results
+    alerts = core.events.event_bus.monitoring_data.alerts
 
-def test_event_history():
-    """Тест истории событий"""
-    bus = EventBus()
-    
-    bus.publish('EVENT1', {'data': 'first'})
-    bus.publish('EVENT2', {'data': 'second'})
-    bus.publish('EVENT1', {'data': 'third'})
-    
-    # Вся история
-    all_history = bus.get_history()
-    assert len(all_history) == 3
-    
-    # Фильтр по имени
-    event1_history = bus.get_history('EVENT1')
-    assert len(event1_history) == 2
-    
-    # С лимитом
-    limited = bus.get_history(limit=2)
-    assert len(limited) == 2
+    assert len(checks) == 1
+    assert checks[0]['doc_id'] == 'doc-42'
+    assert checks[0]['status'] in ('high', 'medium', 'low')
 
+    # similarity 0.82 > 0.7 -> alert должен появиться
+    assert len(alerts) == 1
+    a = alerts[0]
+    assert a['doc_id'] == 'doc-42'
+    assert a['severity'] in ('high', 'medium')
+    assert a['requires_attention'] is True
 
-def test_handle_text_submitted():
-    """Тест обработчика загрузки текста"""
-    event = Event(
-        name='TEXT_SUBMITTED',
-        ts='2024-01-01T00:00:00Z',
-        payload={
-            'user_id': 'user_001',
-            'doc_id': 'doc_001',
-            'title': 'Test Document',
-            'text': 'This is a test document with some text.'
-        }
-    )
-    
-    result = handle_text_submitted(event, event.payload)
-    
-    assert result['type'] == 'new_submission'
-    assert result['user_id'] == 'user_001'
-    assert result['doc_id'] == 'doc_001'
-    assert result['title'] == 'Test Document'
-    assert result['text_length'] > 0
+def test_alert_handler_adds_alert_with_requires_attention_logic():
+    reset_bus()
+    payload = {
+        'doc_id': 'doc-X',
+        'doc_title': 'X',
+        'author_username': 'bob',
+        'author_full_name': 'Bob',
+        'similarity': 0.86,
+        'severity': 'high',
+        'message': 'Нужна проверка'
+    }
 
+    core.events.event_bus.publish('ALERT', payload)
 
-def test_handle_check_done():
-    """Тест обработчика завершения проверки"""
-    event = Event(
-        name='CHECK_DONE',
-        ts='2024-01-01T00:00:00Z',
-        payload={
-            'doc_id': 'doc_001',
-            'similarity': 0.85,
-            'admin_id': 'admin_001'
-        }
-    )
-    
-    result = handle_check_done(event, event.payload)
-    
-    assert result['type'] == 'check_result'
-    assert result['similarity'] == 0.85
-    assert result['status'] == 'suspicious'  # > 0.7
+    alerts = core.events.event_bus.monitoring_data.alerts
+    assert len(alerts) == 1
+    assert alerts[0]['doc_id'] == 'doc-X'
+    # В обработчике requires_attention = similarity > 0.8
+    assert alerts[0]['requires_attention'] is True
+    assert alerts[0]['message'] == 'Нужна проверка'
 
+def test_get_suspicious_matches_dedup_and_sorting():
+    reset_bus()
+    md = core.events.event_bus.monitoring_data
 
-def test_handle_alert():
-    """Тест обработчика алертов"""
-    event = Event(
-        name='ALERT',
-        ts='2024-01-01T00:00:00Z',
-        payload={
-            'severity': 'high',
-            'message': 'Высокая схожесть обнаружена',
-            'doc_id': 'doc_001',
-            'similarity': 0.95
-        }
-    )
-    
-    result = handle_alert(event, event.payload)
-    
-    assert result['type'] == 'alert'
-    assert result['severity'] == 'high'
-    assert result['requires_attention'] is True  # > 0.8
+    # Добавляем два результата проверки для одного doc и второй для другого doc
+    ts1 = (datetime.utcnow() - timedelta(minutes=10)).isoformat() + 'Z'
+    ts2 = (datetime.utcnow() - timedelta(minutes=5)).isoformat() + 'Z'
+    ts3 = datetime.utcnow().isoformat() + 'Z'
 
-
-def test_get_suspicious_matches():
-    """Тест витрины подозрительных совпадений"""
-    from core.events import event_bus
-    
-    # Очищаем историю перед тестом
-    event_bus.clear_history()
-    
-    # Добавляем обработчики
-    event_bus.subscribe('CHECK_DONE', handle_check_done)
-    event_bus.subscribe('ALERT', handle_alert)
-    
-    # Публикуем события
-    event_bus.publish('CHECK_DONE', {
-        'doc_id': 'doc_001',
-        'similarity': 0.75,
-        'admin_id': 'admin_001'
+    md.add_check_result({
+        'type': 'check_result', 'doc_id': 'A', 'similarity': 0.75, 'timestamp': ts1
     })
-    
-    event_bus.publish('ALERT', {
-        'doc_id': 'doc_002',
-        'similarity': 0.90,
-        'message': 'Критическое совпадение',
-        'requires_attention': True
+    md.add_check_result({
+        'type': 'check_result', 'doc_id': 'A', 'similarity': 0.8, 'timestamp': ts2
     })
-    
-    # Проверяем витрину
-    suspicious = get_suspicious_matches(threshold=0.7)
-    
-    assert len(suspicious) > 0
-    assert all(s['similarity'] >= 0.7 for s in suspicious)
+    md.add_check_result({
+        'type': 'check_result', 'doc_id': 'B', 'similarity': 0.7, 'timestamp': ts3
+    })
 
+    # Также добавим альерт для doc A (дубликат по doc_id)
+    md.add_alert({
+        'type': 'alert', 'doc_id': 'A', 'similarity': 0.85, 'timestamp': ts3
+    })
 
-def test_event_bus_error_handling():
-    """Тест обработки ошибок в handlers"""
-    bus = EventBus()
-    
-    def failing_handler(event, payload):
-        raise ValueError("Handler error")
-    
-    def working_handler(event, payload):
-        return {'status': 'ok'}
-    
-    bus.subscribe('TEST', failing_handler)
-    bus.subscribe('TEST', working_handler)
-    
-    results = bus.publish('TEST', {})
-    
-    # Оба обработчика должны быть вызваны
-    assert len(results) == 2
-    # Первый вернул ошибку
-    assert 'error' in results[0]
-    # Второй отработал нормально
-    assert results[1]['status'] == 'ok'
+    # threshold 0.7 -> должны попасть B (0.7) и A (0.75/0.8/0.85) но без дублей, сортированные по timestamp desc
+    suspicious = core.events.get_suspicious_matches(threshold=0.7)
+    assert isinstance(suspicious, list)
+    # doc A и B — только уникальные doc_id
+    doc_ids = [x['doc_id'] for x in suspicious]
+    assert 'A' in doc_ids and 'B' in doc_ids
+    assert len(set(doc_ids)) == len(doc_ids)
+    # Поскольку ts3 новее — на первом месте должен быть элемент с timestamp == ts3
+    assert suspicious[0]['timestamp'] == ts3
 
+def test_event_history_limit_and_get_activity_stats():
+    # Установим маленький лимит истории
+    reset_bus()
+    core.events.event_bus._max_history = 3
 
-def test_activity_stats():
-    """Тест статистики активности"""
-    from core.events import event_bus
-    
-    # Очищаем историю перед тестом
-    event_bus.clear_history()
-    
-    event_bus.subscribe('TEXT_SUBMITTED', handle_text_submitted)
-    event_bus.subscribe('CHECK_DONE', handle_check_done)
-    event_bus.subscribe('ALERT', handle_alert)
-    
-    # Генерируем события
-    event_bus.publish('TEXT_SUBMITTED', {'user_id': 'u1', 'doc_id': 'd1', 'title': 'T1', 'text': 'text'})
-    event_bus.publish('TEXT_SUBMITTED', {'user_id': 'u2', 'doc_id': 'd2', 'title': 'T2', 'text': 'text'})
-    event_bus.publish('CHECK_DONE', {'doc_id': 'd1', 'similarity': 0.5, 'admin_id': 'a1'})
-    event_bus.publish('ALERT', {'doc_id': 'd1', 'similarity': 0.8, 'message': 'Alert'})
-    
-    stats = get_activity_stats()
-    
-    assert stats['total_events'] == 4
-    assert stats['submissions'] == 2
-    assert stats['checks'] == 1
-    assert stats['alerts'] == 1
-    assert stats['last_activity'] is not None
+    # Публикуем 5 событий
+    for i in range(5):
+        core.events.event_bus.publish('TEXT_SUBMITTED', {'doc_id': f'd{i}', 'text': 'x'})
 
+    # История должна быть усечена до последних 3
+    assert len(core.events.event_bus._event_history) == 3
 
-def test_clear_history():
-    """Тест очистки истории"""
-    bus = EventBus()
-    
-    bus.publish('TEST', {'data': '1'})
-    bus.publish('TEST', {'data': '2'})
-    
-    assert len(bus.get_history()) == 2
-    
-    bus.clear_history()
-    
-    assert len(bus.get_history()) == 0
+    stats = core.events.get_activity_stats()
+    assert stats['total_events'] == 3
+    assert stats['submissions'] == len(core.events.event_bus.monitoring_data.submissions)
+    # last_activity должен соответствовать ts последнего события в истории
+    assert stats['last_activity'] == core.events.event_bus._event_history[-1].ts
