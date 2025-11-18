@@ -1,18 +1,16 @@
-// API Base URL - используем относительные пути
+// API Base URL
 const API_URL = '/api';
 
 // State
 let currentUser = null;
-let allDocuments = [];
-let currentEventSource = null;
+let monitoringEventSource = null;
 
-// Переменные для пагинации в "Мои документы"
+// Пагинация
 let myDocsCurrentPage = 0;
 const myDocsPageSize = 10;
 
 // ===== INIT =====
 window.addEventListener('DOMContentLoaded', async () => {
-    // Проверяем авторизацию
     try {
         const response = await fetch(`${API_URL}/me`, { credentials: 'include' });
         if (response.ok) {
@@ -97,6 +95,11 @@ async function login() {
 }
 
 async function logout() {
+    // Закрываем мониторинг если был открыт
+    if (monitoringEventSource) {
+        monitoringEventSource.close();
+    }
+    
     try {
         await fetch(`${API_URL}/logout`, {
             method: 'POST',
@@ -107,7 +110,6 @@ async function logout() {
         document.getElementById('loginPage').style.display = 'flex';
         document.getElementById('mainPage').classList.remove('active');
         
-        // Очистка форм
         document.getElementById('loginUsername').value = '';
         document.getElementById('loginPassword').value = '';
         showLoginForm();
@@ -156,19 +158,19 @@ function setupMenuForRole() {
             </div>
             <div class="menu-item" onclick="showSection('check')">
                 <span class="material-icons">spellcheck</span>
-                <span>Проверить</span>
+                <span>Проверка</span>
             </div>
             <div class="menu-item" onclick="showSection('database')">
                 <span class="material-icons">storage</span>
-                <span>Все документы</span>
+                <span>Документы</span>
             </div>
             <div class="menu-item" onclick="showSection('history')">
                 <span class="material-icons">history</span>
                 <span>История</span>
             </div>
-            <div class="menu-item" onclick="showSection('analytics')">
-                <span class="material-icons">analytics</span>
-                <span>Аналитика</span>
+            <div class="menu-item" onclick="showSection('monitoring')">
+                <span class="material-icons">monitor_heart</span>
+                <span>Мониторинг</span>
             </div>
         `;
     }
@@ -184,13 +186,13 @@ function showSection(sectionId) {
     
     if (sectionId === 'dashboard') renderDashboard();
     if (sectionId === 'my-docs') {
-        myDocsCurrentPage = 0; // Reset to first page
+        myDocsCurrentPage = 0;
         renderMyDocuments();
     }
     if (sectionId === 'check') renderCheckPage();
     if (sectionId === 'database') renderAllDocuments();
     if (sectionId === 'history') renderHistory();
-    if (sectionId === 'analytics') renderAnalyticsPage();
+    if (sectionId === 'monitoring') startMonitoring();
 }
 
 // ===== DASHBOARD =====
@@ -227,8 +229,8 @@ async function renderDashboard() {
                     <div class="metric-label">Пользователей</div>
                 </div>
                 <div class="metric-card">
-                    <div class="metric-value">${stats.cache_stats.size}</div>
-                    <div class="metric-label">Кэш</div>
+                    <div class="metric-value">${stats.activity_stats?.total_events || 0}</div>
+                    <div class="metric-label">Событий</div>
                 </div>
             `;
         }
@@ -237,8 +239,8 @@ async function renderDashboard() {
         
         document.getElementById('dashboardStats').innerHTML = `
             <div class="info-box">
-                <h4>💾 Кэш (мемоизация):</h4>
-                <p>Размер: ${stats.cache_stats.size} записей</p>
+                <h4>💾 Статистика:</h4>
+                <p>Размер кэша: ${stats.cache_stats.size} записей</p>
                 <p>Попаданий: ${stats.cache_stats.hits}</p>
                 <p>Промахов: ${stats.cache_stats.misses}</p>
                 <p>Эффективность: ${Math.round(stats.cache_stats.hit_rate * 100)}%</p>
@@ -276,7 +278,6 @@ async function uploadDocument() {
         if (response.ok) {
             const docId = data.document.id;
             
-            // Показываем успешную загрузку
             document.getElementById('uploadResult').innerHTML = `
                 <div class="info-box" style="margin-top: 20px; background: rgba(16, 185, 129, 0.2); border-color: var(--success);">
                     <p style="color: var(--success); font-weight: 600;">✅ Документ загружен!</p>
@@ -288,7 +289,6 @@ async function uploadDocument() {
                 </p>
             `;
             
-            // Автоматическая проверка на плагиат
             const checkResponse = await fetch(`${API_URL}/check-my-document/${docId}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -297,8 +297,6 @@ async function uploadDocument() {
             });
             
             const checkResult = await checkResponse.json();
-            
-            // Показываем результат проверки
             displayUploadCheckResult(checkResult, title);
             
             document.getElementById('docTitle').value = '';
@@ -378,13 +376,12 @@ function displayUploadCheckResult(result, title) {
             <div style="margin-top: 16px; padding: 12px; background: rgba(255,255,255,0.1); border-radius: 8px; font-size: 13px; color: white;">
                 <p><strong>📊 Статистика:</strong></p>
                 <p>• Проверено документов: ${result.stats?.documents_checked || 0}</p>
-                <p>• Кэш: ${result.stats?.cache_used ? 'использован' : 'не использован'}</p>
             </div>
         </div>
     `;
 }
 
-// ===== MY DOCUMENTS (USER) - с пагинацией =====
+// ===== MY DOCUMENTS (USER) =====
 async function renderMyDocuments(page = 0) {
     myDocsCurrentPage = page;
     
@@ -411,7 +408,7 @@ async function renderMyDocuments(page = 0) {
         let html = `
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding: 16px; background: var(--surface-light); border-radius: 12px;">
                 <span style="font-weight: 600;">📚 Всего документов: ${data.total}</span>
-                <div class="pagination" style="display: flex; gap: 8px; align-items: center;">
+                <div class="pagination">
                     <button class="btn btn-sm" onclick="renderMyDocuments(${myDocsCurrentPage - 1})" 
                             ${myDocsCurrentPage === 0 ? 'disabled' : ''}>
                         ← Назад
@@ -452,11 +449,6 @@ async function renderMyDocuments(page = 0) {
         document.getElementById('myDocsContent').innerHTML = html;
     } catch (error) {
         console.error('Ошибка:', error);
-        document.getElementById('myDocsContent').innerHTML = `
-            <p style="text-align: center; color: var(--error); padding: 40px;">
-                Ошибка загрузки документов
-            </p>
-        `;
     }
 }
 
@@ -520,66 +512,52 @@ async function checkMyDoc(docId, title) {
     }
 }
 
-// ===== CHECK PAGE (ADMIN) - с улучшенной полной проверкой =====
+// Продолжение в следующем сообщении из-за ограничения длины...
+
+// ===== CHECK PAGE (ADMIN) =====
 async function renderCheckPage() {
     document.getElementById('checkContent').innerHTML = `
         <div class="card">
             <h3 class="card-title">
                 <span class="material-icons">search</span>
-                Проверка текста на плагиат
+                Проверка документа на плагиат
             </h3>
             
             <div class="form-group">
                 <label class="input-label">Текст для проверки</label>
-                <textarea class="textarea" id="checkText" placeholder="Вставьте текст для проверки на плагиат..." rows="6"></textarea>
+                <textarea class="textarea" id="checkText" placeholder="Вставьте текст для проверки..." rows="6"></textarea>
             </div>
             
             <div class="form-grid">
                 <div class="form-group">
-                    <label class="input-label">Размер n-грамм</label>
+                    <label class="input-label">Размер фрагментов (n-граммы)</label>
                     <input type="number" class="input" id="checkN" value="3" min="2" max="5">
                 </div>
                 <div class="form-group">
-                    <label class="input-label">Порог схожести (0-1)</label>
-                    <input type="number" class="input" id="checkThreshold" value="0" min="0" max="1" step="0.1" 
-                        placeholder="0 = все результаты">
+                    <label class="input-label">Минимальная схожесть (%)</label>
+                    <input type="number" class="input" id="checkThreshold" value="0" min="0" max="100" 
+                        placeholder="0 = показать все">
                 </div>
             </div>
             
-            <div style="display: flex; gap: 12px; flex-wrap: wrap;">
-                <button class="btn" onclick="startProgressiveCheck()">
-                    <span class="material-icons">search</span>
-                    Полная проверка
-                </button>
-                <button class="btn btn-secondary" onclick="quickCheck()">
-                    <span class="material-icons">flash_on</span>
-                    Быстрая проверка
-                </button>
-                <button class="btn btn-secondary" onclick="searchInDocuments()">
-                    <span class="material-icons">find_in_page</span>
-                    Поиск по документам
-                </button>
-            </div>
+            <button class="btn" onclick="startFullCheck()">
+                <span class="material-icons">search</span>
+                Начать проверку
+            </button>
             
             <div id="checkResults" style="margin-top: 20px;"></div>
         </div>
     `;
 }
 
-// Улучшенная прогрессивная проверка
-async function startProgressiveCheck() {
+async function startFullCheck() {
     const text = document.getElementById('checkText').value.trim();
     const n = parseInt(document.getElementById('checkN').value) || 3;
-    const threshold = parseFloat(document.getElementById('checkThreshold').value) || 0.0;
+    const threshold = parseFloat(document.getElementById('checkThreshold').value) / 100 || 0.0;
     
     if (!text) {
         alert('Введите текст для проверки');
         return;
-    }
-    
-    // Закрываем предыдущее соединение, если есть
-    if (currentEventSource) {
-        currentEventSource.close();
     }
     
     const resultsDiv = document.getElementById('checkResults');
@@ -587,25 +565,24 @@ async function startProgressiveCheck() {
         <div class="result-card">
             <h4 style="display: flex; align-items: center; gap: 8px; margin-bottom: 20px;">
                 <span class="material-icons rotating">sync</span>
-                <span>Выполняется полная проверка</span>
+                <span>Выполняется проверка</span>
             </h4>
             
             <div class="progress-bar" style="height: 12px; margin-bottom: 16px;">
-                <div class="progress-fill" id="plagiarismProgress" style="width: 0%; transition: width 0.5s;"></div>
+                <div class="progress-fill" id="checkProgress" style="width: 0%;"></div>
             </div>
             
-            <div class="progress-text" id="progressText" style="text-align: center; color: var(--text-secondary); margin-bottom: 20px;">
-                Подготовка к проверке...
+            <div id="progressText" style="text-align: center; color: var(--text-secondary); margin-bottom: 20px;">
+                Подготовка...
             </div>
             
-            <div id="plagiarismResults" class="results-container"></div>
-            
-            <div id="finalStats" style="display: none; margin-top: 24px;"></div>
+            <div id="checkResultsList"></div>
+            <div id="finalCheckStats" style="display: none; margin-top: 24px;"></div>
         </div>
     `;
     
     try {
-        const response = await fetch(`${API_URL}/plagiarism/progressive-check`, {
+        const response = await fetch(`${API_URL}/plagiarism/check`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
@@ -627,7 +604,7 @@ async function startProgressiveCheck() {
             
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split('\n');
-            buffer = lines.pop() || ''; // Последняя неполная строка
+            buffer = lines.pop() || '';
             
             for (const line of lines) {
                 if (line.startsWith('data: ')) {
@@ -637,24 +614,24 @@ async function startProgressiveCheck() {
                         document.getElementById('progressText').textContent = `Начинаем проверку ${data.total} документов...`;
                     } 
                     else if (data.progress !== undefined) {
-                        document.getElementById('plagiarismProgress').style.width = `${data.progress}%`;
+                        document.getElementById('checkProgress').style.width = `${data.progress}%`;
                         document.getElementById('progressText').textContent = `Проверено: ${data.progress}%`;
                         
                         if (data.similarity > 0) {
                             allResults.push(data);
-                            addProgressiveResult(data);
+                            addCheckResult(data);
                         }
                     }
                     else if (data.status === 'completed') {
-                        completeProgressiveCheck(allResults, data.total_results);
+                        completeCheck(allResults, data.total_results);
                     }
                 }
             }
         }
         
     } catch (error) {
-        console.error('Progressive check error:', error);
-        document.getElementById('checkResults').innerHTML = `
+        console.error('Check error:', error);
+        resultsDiv.innerHTML = `
             <div class="info-box" style="background: rgba(239, 68, 68, 0.1); border-color: var(--error);">
                 <p style="color: var(--error);"><strong>❌ Ошибка проверки:</strong> ${error.message}</p>
             </div>
@@ -662,11 +639,9 @@ async function startProgressiveCheck() {
     }
 }
 
-// Добавление результата в процессе проверки
-function addProgressiveResult(result) {
-    const container = document.getElementById('plagiarismResults');
+function addCheckResult(result) {
+    const container = document.getElementById('checkResultsList');
     
-    // Если это первый результат, добавим заголовок
     if (container.children.length === 0) {
         const header = document.createElement('h5');
         header.style.cssText = 'margin: 20px 0 16px; color: var(--text); font-size: 16px;';
@@ -693,13 +668,8 @@ function addProgressiveResult(result) {
     element.innerHTML = `
         <div style="display: flex; justify-content: space-between; align-items: center;">
             <div style="flex: 1;">
-                <div class="doc-title">
-                    ${escapeHtml(result.doc_title)}
-                </div>
-                <div class="doc-meta">
-                    👤 Автор: ${escapeHtml(result.doc_author)} • 
-                    🆔 ID: ${result.doc_id}
-                </div>
+                <div class="doc-title">${escapeHtml(result.doc_title)}</div>
+                <div class="doc-meta">👤 ${escapeHtml(result.doc_author)}</div>
                 <div class="progress-bar" style="margin-top: 8px;">
                     <div class="progress-fill" style="width: ${similarityPercent}%;"></div>
                 </div>
@@ -713,19 +683,14 @@ function addProgressiveResult(result) {
     container.appendChild(element);
 }
 
-// Завершение проверки с итоговой статистикой
-function completeProgressiveCheck(results, totalResults) {
-    document.getElementById('plagiarismProgress').style.width = '100%';
+function completeCheck(results, totalResults) {
+    document.getElementById('checkProgress').style.width = '100%';
     document.getElementById('progressText').innerHTML = `
-        <span style="color: var(--success); font-weight: 600;">
-            ✅ Проверка завершена!
-        </span>
+        <span style="color: var(--success); font-weight: 600;">✅ Проверка завершена!</span>
     `;
     
-    // Сортируем результаты по убыванию схожести
     results.sort((a, b) => b.similarity - a.similarity);
     
-    // Находим максимальную схожесть
     const maxSimilarity = results.length > 0 ? results[0].similarity : 0;
     const maxPercent = Math.round(maxSimilarity * 100);
     
@@ -744,12 +709,11 @@ function completeProgressiveCheck(results, totalResults) {
         statusColor = 'var(--error)';
     }
     
-    // Статистика по категориям
     const highSim = results.filter(r => r.similarity > 0.7).length;
     const medSim = results.filter(r => r.similarity >= 0.3 && r.similarity <= 0.7).length;
     const lowSim = results.filter(r => r.similarity < 0.3).length;
     
-    const statsDiv = document.getElementById('finalStats');
+    const statsDiv = document.getElementById('finalCheckStats');
     statsDiv.style.display = 'block';
     statsDiv.innerHTML = `
         <div style="background: linear-gradient(135deg, ${statusColor}22, ${statusColor}11); 
@@ -769,15 +733,15 @@ function completeProgressiveCheck(results, totalResults) {
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px; margin-top: 24px;">
                 <div style="background: var(--surface); padding: 16px; border-radius: 12px;">
                     <div style="font-size: 24px; font-weight: 700; color: var(--error);">${highSim}</div>
-                    <div style="font-size: 12px; color: var(--text-muted);">Высокая схожесть (>70%)</div>
+                    <div style="font-size: 12px; color: var(--text-muted);">Высокая схожесть</div>
                 </div>
                 <div style="background: var(--surface); padding: 16px; border-radius: 12px;">
                     <div style="font-size: 24px; font-weight: 700; color: var(--warning);">${medSim}</div>
-                    <div style="font-size: 12px; color: var(--text-muted);">Средняя схожесть (30-70%)</div>
+                    <div style="font-size: 12px; color: var(--text-muted);">Средняя схожесть</div>
                 </div>
                 <div style="background: var(--surface); padding: 16px; border-radius: 12px;">
                     <div style="font-size: 24px; font-weight: 700; color: var(--success);">${lowSim}</div>
-                    <div style="font-size: 12px; color: var(--text-muted);">Низкая схожесть (<30%)</div>
+                    <div style="font-size: 12px; color: var(--text-muted);">Низкая схожесть</div>
                 </div>
                 <div style="background: var(--surface); padding: 16px; border-radius: 12px;">
                     <div style="font-size: 24px; font-weight: 700; color: var(--primary);">${totalResults}</div>
@@ -786,161 +750,18 @@ function completeProgressiveCheck(results, totalResults) {
             </div>
         </div>
     `;
-    
-    // Меняем иконку с крутящейся на завершенную
-    const header = document.querySelector('#checkResults h4');
-    if (header) {
-        header.innerHTML = `
-            <span class="material-icons" style="color: var(--success);">check_circle</span>
-            <span>Проверка завершена</span>
-        `;
-    }
 }
 
-// Быстрая проверка с пакетной обработкой
-async function quickCheck() {
-    const text = document.getElementById('checkText').value.trim();
-    
-    if (!text) {
-        alert('Введите текст для проверки');
-        return;
-    }
-    
-    const resultsDiv = document.getElementById('checkResults');
-    resultsDiv.innerHTML = '<div class="loading"></div> Быстрая проверка...';
-    
-    try {
-        const response = await fetch(`${API_URL}/plagiarism/quick-check`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
-            body: JSON.stringify({ text })
-        });
-        
-        const data = await response.json();
-        
-        if (data.quick_results.length === 0) {
-            resultsDiv.innerHTML = `
-                <div class="info-box" style="background: rgba(16, 185, 129, 0.1); border-color: var(--success);">
-                    <p style="color: var(--success);"><strong>✅ Быстрая проверка завершена</strong></p>
-                    <p>Похожих документов не найдено</p>
-                    <p><small>Проверено: ${data.total_checked} документов</small></p>
-                </div>
-            `;
-            return;
-        }
-        
-        let html = `
-            <div class="info-box">
-                <p><strong>⚡ Быстрая проверка завершена</strong></p>
-                <p>Найдено ${data.quick_results.length} возможных совпадений</p>
-                <p><small>Проверено: ${data.total_checked} документов</small></p>
-            </div>
-        `;
-        
-        data.quick_results.forEach(result => {
-            const similarityPercent = (result.similarity * 100).toFixed(1);
-            html += `
-                <div class="doc-item" style="margin-top: 12px;">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <div style="flex: 1;">
-                            <div class="doc-title">${result.doc_title}</div>
-                            <div class="doc-meta">👤 ${result.doc_author}</div>
-                            <div class="doc-meta">${result.reason}</div>
-                        </div>
-                        <span class="status-badge ${similarityPercent > 50 ? 'status-error' : 'status-warning'}">
-                            ${similarityPercent}%
-                        </span>
-                    </div>
-                </div>
-            `;
-        });
-        
-        resultsDiv.innerHTML = html;
-        
-    } catch (error) {
-        resultsDiv.innerHTML = `
-            <div class="info-box" style="background: rgba(239, 68, 68, 0.1); border-color: var(--error);">
-                <p style="color: var(--error);"><strong>❌ Ошибка быстрой проверки:</strong> ${error.message}</p>
-            </div>
-        `;
-    }
-}
-
-// Поиск по документам с ленивыми результатами
-async function searchInDocuments() {
-    const text = document.getElementById('checkText').value.trim();
-    
-    if (!text) {
-        alert('Введите текст для поиска');
-        return;
-    }
-    
-    const resultsDiv = document.getElementById('checkResults');
-    resultsDiv.innerHTML = '<div class="loading"></div> Ищем совпадения...';
-    
-    try {
-        const response = await fetch(`${API_URL}/search/documents?q=${encodeURIComponent(text)}`, {
-            credentials: 'include'
-        });
-        
-        const data = await response.json();
-        
-        if (data.results.length === 0) {
-            resultsDiv.innerHTML = `
-                <div class="info-box">
-                    <p>По запросу "${text}" ничего не найдено</p>
-                </div>
-            `;
-            return;
-        }
-        
-        let html = `
-            <div class="info-box">
-                <p><strong>🔍 Результаты поиска</strong></p>
-                <p>Найдено документов: ${data.results.length}</p>
-            </div>
-        `;
-        
-        data.results.forEach(result => {
-            const relevancePercent = (result.relevance * 100).toFixed(0);
-            html += `
-                <div class="doc-item" style="margin-top: 12px;">
-                    <div style="display: flex; justify-content: space-between; align-items: start;">
-                        <div style="flex: 1;">
-                            <div class="doc-title">${result.document.title}</div>
-                            <div class="doc-meta">👤 ${result.document.author}</div>
-                            <div class="doc-text">${result.document.text}</div>
-                        </div>
-                        <span class="status-badge status-success" style="flex-shrink: 0;">
-                            Релевантность: ${relevancePercent}%
-                        </span>
-                    </div>
-                </div>
-            `;
-        });
-        
-        resultsDiv.innerHTML = html;
-        
-    } catch (error) {
-        resultsDiv.innerHTML = `
-            <div class="info-box" style="background: rgba(239, 68, 68, 0.1); border-color: var(--error);">
-                <p style="color: var(--error);"><strong>❌ Ошибка поиска:</strong> ${error.message}</p>
-            </div>
-        `;
-    }
-}
-
-// ===== ALL DOCUMENTS (ADMIN) - с ленивой пагинацией =====
+// ===== DOCUMENTS (ADMIN) =====
 let currentPage = 0;
 const pageSize = 20;
 let currentFilters = {};
 
 async function renderAllDocuments() {
-    await loadDocumentsLazy();
+    await loadDocuments(0);
 }
 
-async function loadDocumentsLazy(page = 0) {
+async function loadDocuments(page = 0) {
     currentPage = page;
     
     try {
@@ -953,43 +774,29 @@ async function loadDocumentsLazy(page = 0) {
         const response = await fetch(`${API_URL}/documents?${params}`, { credentials: 'include' });
         const data = await response.json();
         
-        displayDocumentsWithPagination(data.documents, data.total, currentPage);
-        
+        displayDocuments(data.documents, data.total, currentPage);
     } catch (error) {
         console.error('Ошибка загрузки документов:', error);
-        document.getElementById('documentsTable').innerHTML = `
-            <p style="text-align: center; color: var(--error); padding: 40px;">
-                Ошибка загрузки документов
-            </p>
-        `;
     }
 }
 
-function displayDocumentsWithPagination(docs, total, page) {
+function displayDocuments(docs, total, page) {
     const container = document.getElementById('documentsTable');
     
     if (docs.length === 0) {
-        container.innerHTML = `
-            <p style="text-align: center; color: var(--text-muted); padding: 40px;">
-                Документы не найдены
-            </p>
-        `;
+        container.innerHTML = `<p style="text-align: center; color: var(--text-muted); padding: 40px;">Документы не найдены</p>`;
         return;
     }
     
     const totalPages = Math.ceil(total / pageSize);
     
     let html = `
-        <div class="table-header">
-            <span>📊 Всего документов: ${total}</span>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding: 16px; background: var(--surface-light); border-radius: 12px;">
+            <span style="font-weight: 600;">📊 Всего документов: ${total}</span>
             <div class="pagination">
-                <button class="btn btn-sm" onclick="loadDocumentsLazy(${page - 1})" ${page === 0 ? 'disabled' : ''}>
-                    ← Назад
-                </button>
-                <span>Страница ${page + 1} из ${totalPages}</span>
-                <button class="btn btn-sm" onclick="loadDocumentsLazy(${page + 1})" ${(page + 1) >= totalPages ? 'disabled' : ''}>
-                    Вперед →
-                </button>
+                <button class="btn btn-sm" onclick="loadDocuments(${page - 1})" ${page === 0 ? 'disabled' : ''}>← Назад</button>
+                <span style="padding: 8px 16px; background: var(--surface); border-radius: 8px;">Страница ${page + 1} из ${totalPages}</span>
+                <button class="btn btn-sm" onclick="loadDocuments(${page + 1})" ${(page + 1) >= totalPages ? 'disabled' : ''}>Вперед →</button>
             </div>
         </div>
     `;
@@ -1025,7 +832,7 @@ async function applyFilters() {
     if (dateFrom) currentFilters.date_from = dateFrom;
     if (dateTo) currentFilters.date_to = dateTo;
     
-    await loadDocumentsLazy(0);
+    await loadDocuments(0);
 }
 
 function clearFilters() {
@@ -1036,7 +843,7 @@ function clearFilters() {
     document.getElementById('filterDateTo').value = '';
     
     currentFilters = {};
-    loadDocumentsLazy(0);
+    loadDocuments(0);
 }
 
 // ===== HISTORY (ADMIN) =====
@@ -1063,8 +870,8 @@ async function renderHistory() {
                         <div>
                             <div class="doc-title">${check.doc_title}</div>
                             <div class="doc-meta">
-                                👤 Автор: ${check.doc_author} • 
-                                👨‍💼 Проверил: ${check.admin_name} • 
+                                👤 ${check.doc_author} • 
+                                👨‍💼 ${check.admin_name} • 
                                 📅 ${new Date(check.checked_at).toLocaleString('ru-RU')}
                             </div>
                         </div>
@@ -1082,223 +889,128 @@ async function renderHistory() {
     }
 }
 
-// ===== ANALYTICS (ADMIN) - с пакетной обработкой =====
-function renderAnalyticsPage() {
-    document.getElementById('recursiveResult').innerHTML = '';
-    document.getElementById('authorStatsResult').innerHTML = '';
-}
-
-async function runRecursiveAnalysis() {
-    const btn = event.target;
-    btn.disabled = true;
-    btn.innerHTML = '<div class="loading"></div> Анализ...';
-    
-    const resultDiv = document.getElementById('recursiveResult');
-    resultDiv.innerHTML = '<p style="text-align: center; padding: 40px;"><div class="loading"></div></p>';
-    
-    try {
-        const response = await fetch(`${API_URL}/analytics/recursive`, { 
-            credentials: 'include' 
-        });
-        
-        if (!response.ok) {
-            throw new Error('Ошибка анализа');
-        }
-        
-        const data = await response.json();
-        
-        // Визуализация результатов
-        const avgSimilarity = data.similarities.length > 0 
-            ? data.similarities.reduce((a, b) => a + b, 0) / data.similarities.length 
-            : 0;
-        
-        const highSimilarities = data.similarities.filter(s => s > 0.7).length;
-        const mediumSimilarities = data.similarities.filter(s => s >= 0.3 && s <= 0.7).length;
-        const lowSimilarities = data.similarities.filter(s => s < 0.3).length;
-        
-        resultDiv.innerHTML = `
-            <div style="margin-top: 24px;">
-                <div class="card" style="background: linear-gradient(135deg, var(--primary), var(--secondary)); color: white; margin-bottom: 20px;">
-                    <h3 style="margin: 0 0 16px 0; display: flex; align-items: center; gap: 8px;">
-                        <span class="material-icons">analytics</span>
-                        Результаты рекурсивного анализа
-                    </h3>
-                    
-                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px;">
-                        <div>
-                            <div style="font-size: 32px; font-weight: 800; margin-bottom: 4px;">
-                                ${data.similarities.length}
-                            </div>
-                            <div style="font-size: 13px; opacity: 0.9;">
-                                Документов проанализировано
-                            </div>
-                        </div>
-                        <div>
-                            <div style="font-size: 32px; font-weight: 800; margin-bottom: 4px;">
-                                ${data.document_tree.length}
-                            </div>
-                            <div style="font-size: 13px; opacity: 0.9;">
-                                Документов в цепочке
-                            </div>
-                        </div>
-                        <div>
-                            <div style="font-size: 32px; font-weight: 800; margin-bottom: 4px;">
-                                ${Math.round(Math.max(...data.similarities) * 100)}%
-                            </div>
-                            <div style="font-size: 13px; opacity: 0.9;">
-                                Максимальная схожесть
-                            </div>
-                        </div>
-                        <div>
-                            <div style="font-size: 32px; font-weight: 800; margin-bottom: 4px;">
-                                ${highSimilarities}
-                            </div>
-                            <div style="font-size: 13px; opacity: 0.9;">
-                                Возможных плагиатов
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Дерево связей и статистика остаются без изменений -->
-                ${renderDocumentTree(data)}
-                ${renderSimilarityStats(data, highSimilarities, mediumSimilarities, lowSimilarities)}
-            </div>
-        `;
-    } catch (error) {
-        resultDiv.innerHTML = `
-            <div class="info-box" style="margin-top: 20px; background: rgba(239, 68, 68, 0.1); border-color: var(--error);">
-                <p style="color: var(--error); font-weight: 600;">❌ Ошибка анализа</p>
-                <p>${error.message}</p>
-            </div>
-        `;
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<span class="material-icons">analytics</span> Запустить рекурсивный анализ';
+// ===== MONITORING (ADMIN) =====
+async function startMonitoring() {
+    // Закрываем предыдущее соединение
+    if (monitoringEventSource) {
+        monitoringEventSource.close();
     }
+    
+    document.getElementById('monitoringContent').innerHTML = `
+        <div class="card">
+            <h3 class="card-title">
+                <span class="material-icons">monitor_heart</span>
+                Мониторинг в реальном времени
+            </h3>
+            <p style="color: var(--text-secondary); margin-bottom: 20px;">
+                Отслеживание активности системы и подозрительных документов
+            </p>
+            <div id="monitoringStats"></div>
+        </div>
+        
+        <div class="card" style="margin-top: 20px;">
+            <h4 style="margin-bottom: 16px;">📤 Последние загрузки</h4>
+            <div id="recentSubmissions"></div>
+        </div>
+        
+        <div class="card" style="margin-top: 20px;">
+            <h4 style="margin-bottom: 16px;">✅ Последние проверки</h4>
+            <div id="recentChecks"></div>
+        </div>
+        
+        <div class="card" style="margin-top: 20px;">
+            <h4 style="margin-bottom: 16px;">⚠️ Требуют внимания</h4>
+            <div id="suspiciousMatches"></div>
+        </div>
+    `;
+    
+    // Загружаем начальные данные
+    await updateMonitoringData();
+    
+    // Обновляем каждые 5 секунд
+    setInterval(updateMonitoringData, 5000);
 }
 
-// Новая функция: пакетная статистика
-async function showBatchStats() {
-    const resultDiv = document.getElementById('authorStatsResult');
-    const btn = event.target;
-    btn.disabled = true;
-    btn.innerHTML = '<div class="loading"></div> Загрузка...';
-    
-    resultDiv.innerHTML = '<p style="text-align: center; padding: 20px;"><div class="loading"></div></p>';
-    
+async function updateMonitoringData() {
     try {
-        const response = await fetch(`${API_URL}/analytics/batch-stats`, {
-            credentials: 'include'
-        });
-        
+        const response = await fetch(`${API_URL}/monitoring/events`, { credentials: 'include' });
         const data = await response.json();
         
-        let html = `
-            <div style="margin-top: 24px;">
-                <div class="card" style="background: linear-gradient(135deg, var(--primary), var(--secondary)); color: white; margin-bottom: 20px;">
-                    <h3 style="margin: 0 0 16px 0; display: flex; align-items: center; gap: 8px;">
-                        <span class="material-icons">table_chart</span>
-                        Пакетная статистика документов
-                    </h3>
-                    
-                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px;">
-                        <div>
-                            <div style="font-size: 32px; font-weight: 800; margin-bottom: 4px;">
-                                ${data.total_documents}
-                            </div>
-                            <div style="font-size: 13px; opacity: 0.9;">
-                                Всего документов
-                            </div>
-                        </div>
-                        <div>
-                            <div style="font-size: 32px; font-weight: 800; margin-bottom: 4px;">
-                                ${data.total_characters}
-                            </div>
-                            <div style="font-size: 13px; opacity: 0.9;">
-                                Всего символов
-                            </div>
-                        </div>
-                        <div>
-                            <div style="font-size: 32px; font-weight: 800; margin-bottom: 4px;">
-                                ${data.average_length}
-                            </div>
-                            <div style="font-size: 13px; opacity: 0.9;">
-                                Средняя длина
-                            </div>
-                        </div>
-                        <div>
-                            <div style="font-size: 32px; font-weight: 800; margin-bottom: 4px;">
-                                ${data.batches.length}
-                            </div>
-                            <div style="font-size: 13px; opacity: 0.9;">
-                                Пакетов обработано
-                            </div>
-                        </div>
-                    </div>
+        // Статистика
+        const stats = data.activity_stats;
+        document.getElementById('monitoringStats').innerHTML = `
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px;">
+                <div style="background: var(--surface-light); padding: 16px; border-radius: 12px; text-align: center;">
+                    <div style="font-size: 28px; font-weight: 700; color: var(--primary);">${stats.total_events}</div>
+                    <div style="font-size: 13px; color: var(--text-muted);">Всего событий</div>
                 </div>
+                <div style="background: var(--surface-light); padding: 16px; border-radius: 12px; text-align: center;">
+                    <div style="font-size: 28px; font-weight: 700; color: var(--success);">${stats.submissions}</div>
+                    <div style="font-size: 13px; color: var(--text-muted);">Загрузок</div>
+                </div>
+                <div style="background: var(--surface-light); padding: 16px; border-radius: 12px; text-align: center;">
+                    <div style="font-size: 28px; font-weight: 700; color: var(--info);">${stats.checks}</div>
+                    <div style="font-size: 13px; color: var(--text-muted);">Проверок</div>
+                </div>
+                <div style="background: var(--surface-light); padding: 16px; border-radius: 12px; text-align: center;">
+                    <div style="font-size: 28px; font-weight: 700; color: var(--error);">${stats.alerts}</div>
+                    <div style="font-size: 13px; color: var(--text-muted);">Алертов</div>
+                </div>
+            </div>
         `;
         
-        // Отображаем статистику по пакетам
-        data.batches.forEach((batch, index) => {
-            html += `
-                <div class="card" style="margin-bottom: 16px; background: var(--surface-light);">
-                    <h4 style="margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
-                        <span class="material-icons">layers</span>
-                        Пакет ${batch.batch}
-                    </h4>
-                    
-                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; margin-bottom: 12px;">
-                        <div style="text-align: center;">
-                            <div style="font-size: 24px; font-weight: 700; color: var(--primary);">
-                                ${batch.documents}
-                            </div>
-                            <div style="font-size: 12px; color: var(--text-muted);">
-                                Документов
-                            </div>
-                        </div>
-                        <div style="text-align: center;">
-                            <div style="font-size: 24px; font-weight: 700; color: var(--secondary);">
-                                ${batch.total_chars}
-                            </div>
-                            <div style="font-size: 12px; color: var(--text-muted);">
-                                Символов
-                            </div>
-                        </div>
-                        <div style="text-align: center;">
-                            <div style="font-size: 24px; font-weight: 700; color: var(--success);">
-                                ${batch.avg_chars}
-                            </div>
-                            <div style="font-size: 12px; color: var(--text-muted);">
-                                Средняя длина
-                            </div>
+        // Последние загрузки
+        const submissions = data.recent_submissions.slice(0, 5).map(s => `
+            <div style="padding: 12px; background: var(--surface-light); border-radius: 8px; margin-bottom: 8px;">
+                <div style="font-weight: 600;">${s.title}</div>
+                <div style="font-size: 13px; color: var(--text-muted);">
+                    👤 Пользователь: ${s.user_id} • 
+                    📅 ${new Date(s.timestamp).toLocaleTimeString('ru-RU')} • 
+                    📝 ${s.text_length} символов
+                </div>
+            </div>
+        `).join('');
+        document.getElementById('recentSubmissions').innerHTML = submissions || '<p style="text-align: center; color: var(--text-muted);">Нет новых загрузок</p>';
+        
+        // Последние проверки
+        const checks = data.check_results.slice(0, 5).map(c => {
+            const percentage = Math.round(c.similarity * 100);
+            const statusClass = percentage < 30 ? 'status-success' : percentage < 70 ? 'status-warning' : 'status-error';
+            return `
+                <div style="padding: 12px; background: var(--surface-light); border-radius: 8px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <div style="font-weight: 600;">Документ #${c.doc_id}</div>
+                        <div style="font-size: 13px; color: var(--text-muted);">
+                            📅 ${new Date(c.timestamp).toLocaleTimeString('ru-RU')}
                         </div>
                     </div>
-                    
+                    <div class="status-badge ${statusClass}">${percentage}%</div>
+                </div>
+            `;
+        }).join('');
+        document.getElementById('recentChecks').innerHTML = checks || '<p style="text-align: center; color: var(--text-muted);">Нет проверок</p>';
+        
+        // Подозрительные
+        const suspicious = data.suspicious_matches.slice(0, 5).map(s => {
+            const percentage = Math.round(s.similarity * 100);
+            return `
+                <div style="padding: 12px; background: rgba(239, 68, 68, 0.1); border: 1px solid var(--error); border-radius: 8px; margin-bottom: 8px;">
+                    <div style="font-weight: 600; color: var(--error);">⚠️ Документ #${s.doc_id}</div>
                     <div style="font-size: 13px; color: var(--text-muted);">
-                        <strong>Авторы в пакете:</strong> ${batch.authors.join(', ')}
+                        Схожесть: ${percentage}% • 
+                        📅 ${new Date(s.timestamp).toLocaleTimeString('ru-RU')}
                     </div>
                 </div>
             `;
-        });
-        
-        html += '</div>';
-        resultDiv.innerHTML = html;
+        }).join('');
+        document.getElementById('suspiciousMatches').innerHTML = suspicious || '<p style="text-align: center; color: var(--text-muted);">Подозрительных документов нет</p>';
         
     } catch (error) {
-        resultDiv.innerHTML = `
-            <div class="info-box" style="margin-top: 20px; background: rgba(239, 68, 68, 0.1); border-color: var(--error);">
-                <p style="color: var(--error); font-weight: 600; margin: 0;">❌ Ошибка загрузки статистики</p>
-                <p style="color: var(--error); margin: 8px 0 0 0;">${error.message}</p>
-            </div>
-        `;
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<span class="material-icons">table_chart</span> Показать пакетную статистику';
+        console.error('Ошибка обновления мониторинга:', error);
     }
 }
 
-// ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====
+// ===== UTILS =====
 function escapeHtml(unsafe) {
     return unsafe
         .replace(/&/g, "&amp;")
@@ -1306,140 +1018,4 @@ function escapeHtml(unsafe) {
         .replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;")
         .replace(/'/g, "&#039;");
-}
-
-// Функции renderDocumentTree и renderSimilarityStats остаются без изменений
-function renderDocumentTree(data) {
-    return `
-        <div class="card" style="background: var(--surface-light); margin-bottom: 20px;">
-            <h4 style="margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
-                <span class="material-icons">account_tree</span>
-                Дерево связей документов
-            </h4>
-            <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 16px;">
-                Самая длинная цепочка связанных документов (${data.document_tree.length} документов)
-            </p>
-            
-            ${data.tree_with_titles.map((item, idx) => {
-                const arrow = idx < data.tree_with_titles.length - 1 
-                    ? `<div style="text-align: center; margin: 8px 0;">
-                         <span class="material-icons" style="color: var(--primary); font-size: 28px;">arrow_downward</span>
-                       </div>` 
-                    : '';
-                return `
-                    <div>
-                        <div style="
-                            background: linear-gradient(135deg, var(--primary), var(--secondary));
-                            color: white;
-                            padding: 14px 18px;
-                            border-radius: 10px;
-                            font-weight: 600;
-                            box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
-                        ">
-                            <div style="font-size: 11px; opacity: 0.8; margin-bottom: 4px;">
-                                Шаг ${idx + 1} • ID: ${item.id}
-                            </div>
-                            <div style="font-size: 14px;">
-                                ${item.title}
-                            </div>
-                        </div>
-                        ${arrow}
-                    </div>
-                `;
-            }).join('')}
-        </div>
-    `;
-}
-
-function renderSimilarityStats(data, high, medium, low) {
-    return `
-        <div class="card" style="background: var(--surface-light);">
-            <h4 style="margin-bottom: 16px; display: flex; align-items: center; gap: 8px;">
-                <span class="material-icons">pie_chart</span>
-                Распределение по категориям схожести
-            </h4>
-            
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
-                <div style="padding: 16px; background: var(--surface); border-radius: 10px; border-top: 4px solid #ef4444;">
-                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-                        <span style="font-size: 24px;">🚨</span>
-                        <span style="font-weight: 600; color: var(--text);">Плагиат (≥70%)</span>
-                    </div>
-                    <div style="font-size: 36px; font-weight: 800; color: #ef4444; margin-bottom: 4px;">
-                        ${high}
-                    </div>
-                    <div style="font-size: 13px; color: var(--text-muted);">
-                        ${Math.round(high / data.similarities.length * 100)}% от всех документов
-                    </div>
-                </div>
-                
-                <div style="padding: 16px; background: var(--surface); border-radius: 10px; border-top: 4px solid #f59e0b;">
-                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-                        <span style="font-size: 24px;">⚠️</span>
-                        <span style="font-weight: 600; color: var(--text);">Похожие (30-70%)</span>
-                    </div>
-                    <div style="font-size: 36px; font-weight: 800; color: #f59e0b; margin-bottom: 4px;">
-                        ${medium}
-                    </div>
-                    <div style="font-size: 13px; color: var(--text-muted);">
-                        ${Math.round(medium / data.similarities.length * 100)}% от всех документов
-                    </div>
-                </div>
-                
-                <div style="padding: 16px; background: var(--surface); border-radius: 10px; border-top: 4px solid #10b981;">
-                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-                        <span style="font-size: 24px;">✅</span>
-                        <span style="font-weight: 600; color: var(--text);">Оригиналы (<30%)</span>
-                    </div>
-                    <div style="font-size: 36px; font-weight: 800; color: #10b981; margin-bottom: 4px;">
-                        ${low}
-                    </div>
-                    <div style="font-size: 13px; color: var(--text-muted);">
-                        ${Math.round(low / data.similarities.length * 100)}% от всех документов
-                    </div>
-                </div>
-            </div>
-        </div>
-    `;
-}
-
-// Обновляем функцию showAuthorStats для использования ленивых вычислений
-async function showAuthorStats() {
-    const resultDiv = document.getElementById('authorStatsResult');
-    if (!resultDiv) {
-        console.error('Элемент authorStatsResult не найден!');
-        alert('Ошибка: не найден контейнер для результатов');
-        return;
-    }
-    
-    const btn = event.target;
-    btn.disabled = true;
-    btn.innerHTML = '<div class="loading"></div> Загрузка...';
-    
-    resultDiv.innerHTML = '<p style="text-align: center; padding: 20px;"><div class="loading"></div></p>';
-    
-    try {
-        const response = await fetch(`${API_URL}/stats/authors`, {
-            credentials: 'include'
-        });
-        const data = await response.json();
-        
-        if (!response.ok) {
-            throw new Error(data.error || 'Ошибка загрузки');
-        }
-        
-        // Остальная часть функции showAuthorStats остается без изменений
-        // ... (существующий код отображения статистики авторов)
-        
-    } catch (error) {
-        resultDiv.innerHTML = `
-            <div class="info-box" style="margin-top: 20px; background: rgba(239, 68, 68, 0.1); border-color: var(--error);">
-                <p style="color: var(--error); font-weight: 600; margin: 0;">❌ Ошибка загрузки статистики</p>
-                <p style="color: var(--error); margin: 8px 0 0 0;">${error.message}</p>
-            </div>
-        `;
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<span class="material-icons">bar_chart</span> Показать статистику';
-    }
 }
