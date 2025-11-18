@@ -913,15 +913,6 @@ async function startMonitoring() {
             <div id="recentSubmissions"></div>
         </div>
         
-        <div class="card" style="margin-top: 20px;">
-            <h4 style="margin-bottom: 16px;">✅ Последние проверки</h4>
-            <div id="recentChecks"></div>
-        </div>
-        
-        <div class="card" style="margin-top: 20px;">
-            <h4 style="margin-bottom: 16px;">⚠️ Требуют внимания</h4>
-            <div id="suspiciousMatches"></div>
-        </div>
     `;
     
     // Загружаем начальные данные
@@ -930,7 +921,6 @@ async function startMonitoring() {
     // Обновляем каждые 5 секунд
     setInterval(updateMonitoringData, 5000);
 }
-
 async function updateMonitoringData() {
     try {
         const response = await fetch(`${API_URL}/monitoring/events`, { credentials: 'include' });
@@ -941,46 +931,39 @@ async function updateMonitoringData() {
         document.getElementById('monitoringStats').innerHTML = `
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px;">
                 <div style="background: var(--surface-light); padding: 16px; border-radius: 12px; text-align: center;">
-                    <div style="font-size: 28px; font-weight: 700; color: var(--primary);">${stats.total_events}</div>
+                    <div style="font-size: 28px; font-weight: 700; color: var(--primary);">${stats.total_events || 0}</div>
                     <div style="font-size: 13px; color: var(--text-muted);">Всего событий</div>
                 </div>
                 <div style="background: var(--surface-light); padding: 16px; border-radius: 12px; text-align: center;">
-                    <div style="font-size: 28px; font-weight: 700; color: var(--success);">${stats.submissions}</div>
+                    <div style="font-size: 28px; font-weight: 700; color: var(--success);">${stats.submissions || 0}</div>
                     <div style="font-size: 13px; color: var(--text-muted);">Загрузок</div>
-                </div>
-                <div style="background: var(--surface-light); padding: 16px; border-radius: 12px; text-align: center;">
-                    <div style="font-size: 28px; font-weight: 700; color: var(--info);">${stats.checks}</div>
-                    <div style="font-size: 13px; color: var(--text-muted);">Проверок</div>
-                </div>
-                <div style="background: var(--surface-light); padding: 16px; border-radius: 12px; text-align: center;">
-                    <div style="font-size: 28px; font-weight: 700; color: var(--error);">${stats.alerts}</div>
-                    <div style="font-size: 13px; color: var(--text-muted);">Алертов</div>
                 </div>
             </div>
         `;
         
         // Последние загрузки
-        const submissions = data.recent_submissions.slice(0, 5).map(s => `
+        const submissions = (data.recent_submissions || []).slice(0, 5).map(s => `
             <div style="padding: 12px; background: var(--surface-light); border-radius: 8px; margin-bottom: 8px;">
-                <div style="font-weight: 600;">${s.title}</div>
+                <div style="font-weight: 600;">${s.title || 'Без названия'}</div>
                 <div style="font-size: 13px; color: var(--text-muted);">
-                    👤 Пользователь: ${s.user_id} • 
+                    👤 ${s.full_name || s.username || 'Неизвестный пользователь'} • 
                     📅 ${new Date(s.timestamp).toLocaleTimeString('ru-RU')} • 
-                    📝 ${s.text_length} символов
+                    📝 ${s.text_length || 0} символов
                 </div>
             </div>
         `).join('');
-        document.getElementById('recentSubmissions').innerHTML = submissions || '<p style="text-align: center; color: var(--text-muted);">Нет новых загрузок</p>';
+        document.getElementById('recentSubmissions').innerHTML = submissions || '<p style="text-align: center; color: var(--text-muted); padding: 20px;">Нет новых загрузок</p>';
         
         // Последние проверки
-        const checks = data.check_results.slice(0, 5).map(c => {
-            const percentage = Math.round(c.similarity * 100);
+        const checks = (data.check_results || []).slice(0, 5).map(c => {
+            const percentage = Math.round((c.similarity || 0) * 100);
             const statusClass = percentage < 30 ? 'status-success' : percentage < 70 ? 'status-warning' : 'status-error';
             return `
                 <div style="padding: 12px; background: var(--surface-light); border-radius: 8px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
                     <div>
-                        <div style="font-weight: 600;">Документ #${c.doc_id}</div>
+                        <div style="font-weight: 600;">${c.doc_title || 'Без названия'}</div>
                         <div style="font-size: 13px; color: var(--text-muted);">
+                            👤 ${c.author_full_name || c.author_username || 'Неизвестный автор'} • 
                             📅 ${new Date(c.timestamp).toLocaleTimeString('ru-RU')}
                         </div>
                     </div>
@@ -988,22 +971,23 @@ async function updateMonitoringData() {
                 </div>
             `;
         }).join('');
-        document.getElementById('recentChecks').innerHTML = checks || '<p style="text-align: center; color: var(--text-muted);">Нет проверок</p>';
+        document.getElementById('recentChecks').innerHTML = checks || '<p style="text-align: center; color: var(--text-muted); padding: 20px;">Нет проверок</p>';
         
         // Подозрительные
-        const suspicious = data.suspicious_matches.slice(0, 5).map(s => {
-            const percentage = Math.round(s.similarity * 100);
+        const suspicious = (data.suspicious_matches || []).slice(0, 5).map(s => {
+            const percentage = Math.round((s.similarity || 0) * 100);
             return `
                 <div style="padding: 12px; background: rgba(239, 68, 68, 0.1); border: 1px solid var(--error); border-radius: 8px; margin-bottom: 8px;">
-                    <div style="font-weight: 600; color: var(--error);">⚠️ Документ #${s.doc_id}</div>
+                    <div style="font-weight: 600; color: var(--error);">⚠️ ${s.doc_title || 'Без названия'}</div>
                     <div style="font-size: 13px; color: var(--text-muted);">
+                        👤 ${s.author_full_name || s.author_username || 'Неизвестный автор'} • 
                         Схожесть: ${percentage}% • 
                         📅 ${new Date(s.timestamp).toLocaleTimeString('ru-RU')}
                     </div>
                 </div>
             `;
         }).join('');
-        document.getElementById('suspiciousMatches').innerHTML = suspicious || '<p style="text-align: center; color: var(--text-muted);">Подозрительных документов нет</p>';
+        document.getElementById('suspiciousMatches').innerHTML = suspicious || '<p style="text-align: center; color: var(--text-muted); padding: 20px;">Подозрительных документов нет</p>';
         
     } catch (error) {
         console.error('Ошибка обновления мониторинга:', error);
